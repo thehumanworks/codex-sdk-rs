@@ -1,0 +1,29 @@
+[package]
+name = "codex-app-server-sdk"
+version = "0.1.0"
+edition = "2024"
+description = "Tokio Rust SDK for Codex App Server"
+license = "MIT"
+repository = "https://github.com/example/codex-app-server-sdk"
+readme = "README.md"
+keywords = ["codex", "openai", "json-rpc", "sdk"]
+categories = ["api-bindings", "asynchronous"]
+
+[features]
+default = ["stdio"]
+stdio = []
+ws = ["dep:tokio-tungstenite", "dep:url"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+url = { version = "2", optional = true }
+tokio-tungstenite = { version = "0.28", optional = true }
+futures-util = "0.3"
+semver = "1"
+
+[dev-dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
