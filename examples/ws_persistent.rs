@@ -10,14 +10,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
 
-    let mut thread = client.start_thread(ThreadOptions::default());
+    let mut thread = client.start_thread(ThreadOptions {
+        model: Some("gpt-5.3-codex-spark".to_string()),
+        ..Default::default()
+    });
     let turn = thread
-        .run("Reply with exactly: ok", TurnOptions::default())
+        .run(
+            "Write a haiku about Codex Spark, and its speed!",
+            TurnOptions::default(),
+        )
         .await?;
     println!("response: {}", turn.final_response);
 
     let mut streamed = thread
-        .run_streamed("Reply with exactly: ok", TurnOptions::default())
+        .run_streamed(
+            "Write a haiku about Codex Spark, and its speed!",
+            TurnOptions::default(),
+        )
         .await?;
     while let Some(next) = streamed.next_event().await {
         match next? {
@@ -33,8 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             | ThreadEvent::TurnStarted
             | ThreadEvent::ItemStarted { .. }
             | ThreadEvent::ItemUpdated { .. }
-            | ThreadEvent::ItemCompleted { .. }
             | ThreadEvent::Error { .. } => {}
+            ThreadEvent::ItemCompleted { item } => {
+                use codex_app_server_sdk::ThreadItem;
+
+                if let ThreadItem::AgentMessage(message) = item {
+                    println!("Agent Message: {}", message.text);
+                }
+            }
         }
     }
 
