@@ -109,6 +109,8 @@
 - With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
+- Use `TurnOptions::builder()` for per-turn output schema control; `output_schema` maps directly to app-server `turn/start.output_schema` and accepts either raw `serde_json::Value` or typed schemas via `output_schema_for::<T>()`.
+- Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
 
 ## Critical Paths and Review Focus
 - High-risk paths:
