@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use codex_app_server_sdk::StdioConfig;
-use codex_app_server_sdk::abstractions::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 

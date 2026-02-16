@@ -1,4 +1,4 @@
-pub mod abstractions;
+pub mod api;
 pub mod client;
 pub mod compat;
 pub mod error;
@@ -6,7 +6,7 @@ pub mod events;
 pub mod protocol;
 pub mod transport;
 
-pub use abstractions::{
+pub use api::{
     ApprovalMode, Codex, CommandExecutionItem, CommandExecutionStatus, ErrorItem, FileChangeItem,
     FileUpdateChange, Input, McpToolCallItem, McpToolCallStatus, ModelReasoningEffort,
     PatchApplyStatus, PatchChangeKind, ReasoningItem, RunResult, SandboxMode, StreamedTurn, Thread,

@@ -41,10 +41,10 @@ println!("turn: {}", turn.turn.id);
 # }
 ```
 
-## Quickstart (high-level typed abstractions)
+## Quickstart (high-level typed API)
 
 ```rust
-use codex_app_server_sdk::abstractions::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
 use codex_app_server_sdk::StdioConfig;
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -137,7 +137,7 @@ These tests execute against a real local `codex app-server` process:
 
 ```bash
 cargo test --test integration_stdio -- --ignored --nocapture
-cargo test --test integration_abstractions_stdio -- --ignored --nocapture
+cargo test --test integration_api_stdio -- --ignored --nocapture
 cargo test --features ws --test integration_ws -- --ignored --nocapture
 ```
 

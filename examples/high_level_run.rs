@@ -1,5 +1,5 @@
 use codex_app_server_sdk::StdioConfig;
-use codex_app_server_sdk::abstractions::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
