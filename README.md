@@ -187,6 +187,22 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `examples/high_level_streamed.rs`
 - `examples/high_level_output_schema.rs`
 
+## `spark` CLI
+
+The repository includes a `spark` binary for one-shot streamed runs:
+
+```bash
+cargo run --bin spark -- "Summarize this repository in one sentence."
+```
+
+`spark` always uses:
+
+- model: `gpt-5.3-codex-spark`
+- reasoning effort: `xhigh`
+
+Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
+Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored; `skills` and Markdown body are applied as developer instructions.
+
 ## Integration tests
 
 These tests execute against a real local `codex app-server` process:
