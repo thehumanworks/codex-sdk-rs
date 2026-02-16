@@ -114,6 +114,7 @@
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
 - The `spark` binary is single-shot only (no thread continuation), streams `agentMessage` deltas to stdout, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
 - `spark --agent <name>` resolves `~/.codex/agents/<name>.md`, requires YAML frontmatter with matching `name`, ignores `model`/`tools`, and uses frontmatter `skills` plus Markdown body as `developer_instructions`.
+- On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run --bin spark -- ...` or `./target/release/spark ...` to run the repository binary.
 
 ## Critical Paths and Review Focus
 - High-risk paths:
