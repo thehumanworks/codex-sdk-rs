@@ -24,6 +24,8 @@ use crate::transport::TransportHandle;
 use crate::transport::stdio::spawn_stdio_transport;
 #[cfg(feature = "ws")]
 use crate::transport::ws::connect_ws_transport;
+#[cfg(feature = "ws")]
+use crate::transport::ws_daemon::ensure_local_ws_app_server;
 
 type PendingMap = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
 type RefreshFuture = Pin<
@@ -131,6 +133,7 @@ impl CodexClient {
 
     #[cfg(feature = "ws")]
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
+        ensure_local_ws_app_server(&config.url).await?;
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }

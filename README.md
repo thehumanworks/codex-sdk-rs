@@ -11,7 +11,10 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 ## Features
 
 - `stdio` (default): spawn `codex app-server` locally.
-- `ws`: connect to an externally hosted app-server websocket endpoint.
+- `ws`: websocket transport with loopback daemon management.
+  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), the SDK reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
+  - Non-loopback URLs remain connect-only (no process management).
+  - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
 
 ## Quickstart (stdio)
 
@@ -34,6 +37,25 @@ let turn = client
     .await?;
 
 println!("turn: {}", turn.turn.id);
+# Ok(())
+# }
+```
+
+## Quickstart (ws, persistent loopback daemon)
+
+```rust
+use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
+use codex_app_server_sdk::requests::{ClientInfo, InitializeParams};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = CodexClient::connect_ws(WsConfig {
+    url: "ws://127.0.0.1:4222".to_string(),
+    options: ClientOptions::default(),
+}).await?;
+
+let init = InitializeParams::new(ClientInfo::new("my_client", "My Client", "0.1.0"));
+let _ = client.initialize(init).await?;
+client.initialized().await?;
 # Ok(())
 # }
 ```
@@ -83,6 +105,7 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `examples/turn_start_stream.rs`
 - `examples/auth_api_key.rs`
 - `examples/raw_fallback.rs`
+- `examples/ws_persistent.rs`
 
 ## Integration tests
 
@@ -90,6 +113,7 @@ These tests execute against a real local `codex app-server` process:
 
 ```bash
 cargo test --test integration_stdio -- --ignored --nocapture
+cargo test --features ws --test integration_ws -- --ignored --nocapture
 ```
 
 ## License
