@@ -1,7 +1,7 @@
 #[cfg(feature = "ws")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use codex_app_server_sdk::protocol::requests::{ClientInfo, InitializeParams};
+    use codex_app_server_sdk::api::{ThreadEvent, ThreadOptions, TurnOptions};
     use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 
     let client = CodexClient::connect_ws(WsConfig {
@@ -10,16 +10,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
 
-    let init = InitializeParams::new(ClientInfo::new(
-        "ws_persistent_example",
-        "WS Persistent Example",
-        env!("CARGO_PKG_VERSION"),
-    ));
+    let mut thread = client.start_thread(ThreadOptions::default());
+    let turn = thread
+        .run("Reply with exactly: ok", TurnOptions::default())
+        .await?;
+    println!("response: {}", turn.final_response);
 
-    let _ = client.initialize(init).await?;
-    client.initialized().await?;
+    let mut streamed = thread
+        .run_streamed("Reply with exactly: ok", TurnOptions::default())
+        .await?;
+    while let Some(next) = streamed.next_event().await {
+        match next? {
+            ThreadEvent::TurnCompleted { .. } => {
+                println!("streamed turn completed");
+                break;
+            }
+            ThreadEvent::TurnFailed { error } => {
+                eprintln!("streamed turn failed: {}", error.message);
+                break;
+            }
+            ThreadEvent::ThreadStarted { .. }
+            | ThreadEvent::TurnStarted
+            | ThreadEvent::ItemStarted { .. }
+            | ThreadEvent::ItemUpdated { .. }
+            | ThreadEvent::ItemCompleted { .. }
+            | ThreadEvent::Error { .. } => {}
+        }
+    }
 
-    println!("connected to websocket app-server");
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use codex_app_server_sdk::StdioConfig;
 use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::{CodexClient, StdioConfig};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -72,6 +72,25 @@ async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::e
 
     assert!(saw_started, "expected started events");
     assert!(saw_completed, "expected turn completion event");
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local codex app-server runtime"]
+async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::error::Error>> {
+    let client = CodexClient::spawn_stdio(StdioConfig::default()).await?;
+    let mut thread = client.start_thread(ThreadOptions::default());
+
+    let result = thread
+        .run("Reply with exactly: ok", TurnOptions::default())
+        .await?;
+
+    assert!(thread.id().is_some(), "thread id should be populated");
+    assert!(
+        !result.final_response.trim().is_empty(),
+        "final response should not be empty"
+    );
 
     Ok(())
 }

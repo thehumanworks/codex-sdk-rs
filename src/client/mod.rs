@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 
+use crate::api::{Codex, Thread, ThreadOptions};
 use crate::compat::{CompatibilityPolicy, check_cli_version, parse_cli_version};
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
 use crate::events::{
@@ -154,6 +155,18 @@ impl CodexClient {
 
         tokio::spawn(run_inbound_loop(handle.inbound, inner.clone()));
         Self { inner }
+    }
+
+    pub fn as_api(&self) -> Codex {
+        Codex::from_client(self.clone())
+    }
+
+    pub fn start_thread(&self, options: ThreadOptions) -> Thread {
+        self.as_api().start_thread(options)
+    }
+
+    pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
+        self.as_api().resume_thread(id, options)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {

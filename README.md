@@ -63,11 +63,11 @@ println!("response: {}", turn.final_response);
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
 
-## Quickstart (ws, persistent loopback daemon)
+## Quickstart (ws, persistent loopback daemon + high-level api)
 
 ```rust
+use codex_app_server_sdk::api::{ThreadOptions, TurnOptions};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
-use codex_app_server_sdk::requests::{ClientInfo, InitializeParams};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let client = CodexClient::connect_ws(WsConfig {
@@ -75,12 +75,16 @@ let client = CodexClient::connect_ws(WsConfig {
     options: ClientOptions::default(),
 }).await?;
 
-let init = InitializeParams::new(ClientInfo::new("my_client", "My Client", "0.1.0"));
-let _ = client.initialize(init).await?;
-client.initialized().await?;
+let mut thread = client.start_thread(ThreadOptions::default());
+let turn = thread
+    .run("Reply with exactly: ok", TurnOptions::default())
+    .await?;
+println!("response: {}", turn.final_response);
 # Ok(())
 # }
 ```
+
+The same `start_thread(...)`, `run(...)`, and `run_streamed(...)` flow works for stdio and ws transports.
 
 ## Reliability model
 

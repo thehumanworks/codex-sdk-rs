@@ -107,6 +107,7 @@
 - `auth_api_key` example requires `OPENAI_API_KEY`.
 - Compatibility policy is enforced in `src/compat.rs`; update tests/docs when adjusting version ranges.
 - With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
+- `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
 
 ## Critical Paths and Review Focus
 - High-risk paths:
