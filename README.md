@@ -41,6 +41,28 @@ println!("turn: {}", turn.turn.id);
 # }
 ```
 
+## Quickstart (high-level typed abstractions)
+
+```rust
+use codex_app_server_sdk::abstractions::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::StdioConfig;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let mut thread = codex.start_thread(ThreadOptions::default());
+
+let turn = thread
+    .run("Summarize this repository in two bullet points.", TurnOptions::default())
+    .await?;
+
+println!("thread: {}", thread.id().unwrap_or("<unknown>"));
+println!("response: {}", turn.final_response);
+# Ok(())
+# }
+```
+
+Use `run_streamed(...)` when you need incremental item and lifecycle events.
+
 ## Quickstart (ws, persistent loopback daemon)
 
 ```rust
@@ -106,6 +128,8 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `examples/auth_api_key.rs`
 - `examples/raw_fallback.rs`
 - `examples/ws_persistent.rs`
+- `examples/high_level_run.rs`
+- `examples/high_level_streamed.rs`
 
 ## Integration tests
 
@@ -113,6 +137,7 @@ These tests execute against a real local `codex app-server` process:
 
 ```bash
 cargo test --test integration_stdio -- --ignored --nocapture
+cargo test --test integration_abstractions_stdio -- --ignored --nocapture
 cargo test --features ws --test integration_ws -- --ignored --nocapture
 ```
 
