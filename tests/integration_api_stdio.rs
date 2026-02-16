@@ -1,9 +1,16 @@
 use std::time::{Duration, Instant};
 
 use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
-use codex_app_server_sdk::{CodexClient, StdioConfig};
+use codex_app_server_sdk::{CodexClient, OpenAiSerializable, StdioConfig};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]
+struct SchemaConstrainedResponse {
+    answer: String,
+}
 
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
@@ -90,6 +97,34 @@ async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::e
     assert!(
         !result.final_response.trim().is_empty(),
         "final response should not be empty"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local codex app-server runtime"]
+async fn run_respects_output_schema_for_typed_deserialization()
+-> Result<(), Box<dyn std::error::Error>> {
+    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let mut thread = codex.start_thread(ThreadOptions::default());
+
+    let turn_options = TurnOptions::builder()
+        .output_schema_for::<SchemaConstrainedResponse>()
+        .build();
+
+    let result = thread
+        .run(
+            "Respond with strict JSON only using one field named answer with value ok.",
+            turn_options,
+        )
+        .await?;
+
+    let value: serde_json::Value = serde_json::from_str(&result.final_response)?;
+    let parsed = SchemaConstrainedResponse::from_openai_value(value)?;
+    assert!(
+        !parsed.answer.trim().is_empty(),
+        "expected non-empty answer in schema constrained output"
     );
 
     Ok(())

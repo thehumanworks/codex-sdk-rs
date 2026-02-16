@@ -13,6 +13,7 @@ use crate::client::WsConfig;
 use crate::error::ClientError;
 use crate::events::{ServerEvent, ServerNotification};
 use crate::protocol::requests;
+use crate::schema::OpenAiSerializable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalMode {
@@ -422,6 +423,52 @@ impl ThreadOptionsBuilder {
 #[derive(Debug, Clone, Default)]
 pub struct TurnOptions {
     pub output_schema: Option<Value>,
+}
+
+impl TurnOptions {
+    pub fn builder() -> TurnOptionsBuilder {
+        TurnOptionsBuilder::new()
+    }
+
+    pub fn with_output_schema(mut self, output_schema: Value) -> Self {
+        self.output_schema = Some(output_schema);
+        self
+    }
+
+    pub fn with_output_schema_for<T: OpenAiSerializable>(mut self) -> Self {
+        self.output_schema = Some(T::openai_output_schema());
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TurnOptionsBuilder {
+    options: TurnOptions,
+}
+
+impl TurnOptionsBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(self) -> TurnOptions {
+        self.options
+    }
+
+    pub fn output_schema(mut self, output_schema: Value) -> Self {
+        self.options.output_schema = Some(output_schema);
+        self
+    }
+
+    pub fn output_schema_for<T: OpenAiSerializable>(mut self) -> Self {
+        self.options.output_schema = Some(T::openai_output_schema());
+        self
+    }
+
+    pub fn clear_output_schema(mut self) -> Self {
+        self.options.output_schema = None;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1491,7 +1538,23 @@ fn parse_mcp_tool_call_status(status: &str) -> McpToolCallStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
     use serde_json::json;
+
+    #[derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Eq,
+        Serialize,
+        Deserialize,
+        JsonSchema,
+        codex_app_server_sdk::OpenAiSerializable,
+    )]
+    struct StructuredReply {
+        answer: String,
+    }
 
     #[test]
     fn normalize_input_combines_text_and_images() {
@@ -1725,6 +1788,52 @@ mod tests {
         assert_eq!(
             disabled_params.extra.get("skipGitRepoCheck"),
             Some(&Value::Bool(false))
+        );
+    }
+
+    #[test]
+    fn turn_options_builder_sets_typed_output_schema() {
+        let turn_options = TurnOptions::builder()
+            .output_schema_for::<StructuredReply>()
+            .build();
+        let turn_params = build_turn_start_params(
+            "thread_123",
+            Input::text("hello"),
+            &ThreadOptions::default(),
+            &turn_options,
+        );
+
+        assert_eq!(
+            turn_params.output_schema,
+            Some(StructuredReply::openai_output_schema())
+        );
+    }
+
+    #[test]
+    fn turn_options_builder_clear_output_schema_overrides_previous_value() {
+        let turn_options = TurnOptions::builder()
+            .output_schema(json!({"type": "object"}))
+            .clear_output_schema()
+            .build();
+        let turn_params = build_turn_start_params(
+            "thread_123",
+            Input::text("hello"),
+            &ThreadOptions::default(),
+            &turn_options,
+        );
+
+        assert_eq!(turn_params.output_schema, None);
+    }
+
+    #[test]
+    fn turn_options_value_helpers_set_raw_and_typed_schemas() {
+        let raw = TurnOptions::default().with_output_schema(json!({"type": "object"}));
+        assert_eq!(raw.output_schema, Some(json!({"type": "object"})));
+
+        let typed = TurnOptions::default().with_output_schema_for::<StructuredReply>();
+        assert_eq!(
+            typed.output_schema,
+            Some(StructuredReply::openai_output_schema())
         );
     }
 }

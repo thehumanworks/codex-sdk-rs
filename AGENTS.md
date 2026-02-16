@@ -21,6 +21,7 @@
 - `cargo test --features ws --test integration_ws -- --ignored --nocapture`: real websocket transport tests.
 - `cargo run --example raw_fallback`: raw RPC smoke test.
 - `cargo run --example turn_start_stream`: live turn streaming test.
+- `cargo run --bin spark -- "..."`: one-shot streamed run with fixed `gpt-5.3-codex-spark` + `xhigh`.
 
 ## CI Merge Gate (Source of Truth)
 - Required for merge:
@@ -109,6 +110,10 @@
 - With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
+- Use `TurnOptions::builder()` for per-turn output schema control; `output_schema` maps directly to app-server `turn/start.output_schema` and accepts either raw `serde_json::Value` or typed schemas via `output_schema_for::<T>()`.
+- Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
+- The `spark` binary is single-shot only (no thread continuation), streams `agentMessage` deltas to stdout, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
+- `spark --agent <name>` resolves `~/.codex/agents/<name>.md`, requires YAML frontmatter with matching `name`, ignores `model`/`tools`, and uses frontmatter `skills` plus Markdown body as `developer_instructions`.
 
 ## Critical Paths and Review Focus
 - High-risk paths:

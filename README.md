@@ -58,9 +58,10 @@ let thread_options = ThreadOptions::builder()
     .skip_git_repo_check(true) // matches CLI flag: --skip-git-repo-check
     .build();
 let mut thread = codex.start_thread(thread_options);
+let turn_options = TurnOptions::builder().build();
 
 let turn = thread
-    .run("Summarize this repository in two bullet points.", TurnOptions::default())
+    .run("Summarize this repository in two bullet points.", turn_options)
     .await?;
 
 println!("thread: {}", thread.id().unwrap_or("<unknown>"));
@@ -70,6 +71,36 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+
+`TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`.
+
+## Typed output schema
+
+```rust
+use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::{OpenAiSerializable, StdioConfig};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]
+struct Reply {
+    answer: String,
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let mut thread = codex.start_thread(ThreadOptions::default());
+let turn_options = TurnOptions::builder().output_schema_for::<Reply>().build();
+let turn = thread
+    .run("Respond with JSON only and include the `answer` field.", turn_options)
+    .await?;
+
+let value: serde_json::Value = serde_json::from_str(&turn.final_response)?;
+let reply = Reply::from_openai_value(value)?;
+println!("{}", reply.answer);
+# Ok(())
+# }
+```
 
 `ThreadOptionsBuilder` also exposes protocol-level options that were previously missing, including:
 - `model_provider`
@@ -154,6 +185,23 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `examples/ws_persistent.rs`
 - `examples/high_level_run.rs`
 - `examples/high_level_streamed.rs`
+- `examples/high_level_output_schema.rs`
+
+## `spark` CLI
+
+The repository includes a `spark` binary for one-shot streamed runs:
+
+```bash
+cargo run --bin spark -- "Summarize this repository in one sentence."
+```
+
+`spark` always uses:
+
+- model: `gpt-5.3-codex-spark`
+- reasoning effort: `xhigh`
+
+Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
+Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored; `skills` and Markdown body are applied as developer instructions.
 
 ## Integration tests
 

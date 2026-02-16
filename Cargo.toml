@@ -15,6 +15,8 @@ stdio = []
 ws = ["dep:tokio-tungstenite", "dep:url"]
 
 [dependencies]
+codex-app-server-sdk-macros = { path = "codex-app-server-sdk-macros", version = "0.1.0" }
+schemars = { version = "0.8", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -23,6 +25,7 @@ url = { version = "2", optional = true }
 tokio-tungstenite = { version = "0.28", optional = true }
 futures-util = "0.3"
 semver = "1"
+serde_yaml = "0.9"
 
 [dev-dependencies]
 anyhow = "1"
