@@ -7,11 +7,13 @@ pub mod protocol;
 pub mod transport;
 
 pub use api::{
-    ApprovalMode, Codex, CommandExecutionItem, CommandExecutionStatus, ErrorItem, FileChangeItem,
+    ApprovalMode, Codex, CollaborationMode, CollaborationModeKind, CollaborationModeSettings,
+    CommandExecutionItem, CommandExecutionStatus, DynamicToolSpec, ErrorItem, FileChangeItem,
     FileUpdateChange, Input, McpToolCallItem, McpToolCallStatus, ModelReasoningEffort,
-    PatchApplyStatus, PatchChangeKind, ReasoningItem, RunResult, SandboxMode, StreamedTurn, Thread,
-    ThreadError, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TodoItem, TodoListItem,
-    Turn, TurnOptions, Usage, UserInput, WebSearchItem, WebSearchMode,
+    ModelReasoningSummary, PatchApplyStatus, PatchChangeKind, Personality, ReasoningItem,
+    RunResult, SandboxMode, StreamedTurn, Thread, ThreadError, ThreadEvent, ThreadItem,
+    ThreadOptions, ThreadOptionsBuilder, ThreadRunError, TodoItem, TodoListItem, Turn, TurnOptions,
+    Usage, UserInput, WebSearchItem, WebSearchMode,
 };
 #[cfg(feature = "ws")]
 pub use client::WsConfig;
