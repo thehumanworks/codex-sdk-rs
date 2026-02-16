@@ -44,12 +44,20 @@ println!("turn: {}", turn.turn.id);
 ## Quickstart (high-level typed API)
 
 ```rust
-use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{
+    Codex, ModelReasoningEffort, SandboxMode, ThreadOptions, TurnOptions, WebSearchMode,
+};
 use codex_app_server_sdk::StdioConfig;
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
-let mut thread = codex.start_thread(ThreadOptions::default());
+let thread_options = ThreadOptions::builder()
+    .sandbox_mode(SandboxMode::WorkspaceWrite)
+    .model_reasoning_effort(ModelReasoningEffort::Medium)
+    .web_search_mode(WebSearchMode::Live)
+    .skip_git_repo_check(true) // matches CLI flag: --skip-git-repo-check
+    .build();
+let mut thread = codex.start_thread(thread_options);
 
 let turn = thread
     .run("Summarize this repository in two bullet points.", TurnOptions::default())
@@ -62,6 +70,18 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+
+`ThreadOptionsBuilder` also exposes protocol-level options that were previously missing, including:
+- `model_provider`
+- `model_reasoning_summary`
+- `personality`
+- `sandbox_policy`
+- `base_instructions`
+- `developer_instructions`
+- `ephemeral`
+- `collaboration_mode`
+- `config` overrides and dynamic tools
+- `experimental_raw_events` and `persist_extended_history`
 
 ## Quickstart (ws, persistent loopback daemon + high-level api)
 

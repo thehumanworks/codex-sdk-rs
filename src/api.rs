@@ -52,6 +52,7 @@ impl SandboxMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelReasoningEffort {
+    None,
     Minimal,
     Low,
     Medium,
@@ -62,11 +63,48 @@ pub enum ModelReasoningEffort {
 impl ModelReasoningEffort {
     fn as_str(self) -> &'static str {
         match self {
+            Self::None => "none",
             Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelReasoningSummary {
+    None,
+    Auto,
+    Concise,
+    Detailed,
+}
+
+impl ModelReasoningSummary {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Personality {
+    None,
+    Friendly,
+    Pragmatic,
+}
+
+impl Personality {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Friendly => "friendly",
+            Self::Pragmatic => "pragmatic",
         }
     }
 }
@@ -88,18 +126,297 @@ impl WebSearchMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollaborationModeKind {
+    Plan,
+    Default,
+}
+
+impl CollaborationModeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollaborationModeSettings {
+    pub model: String,
+    pub reasoning_effort: Option<ModelReasoningEffort>,
+    pub developer_instructions: Option<String>,
+}
+
+impl CollaborationModeSettings {
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            reasoning_effort: None,
+            developer_instructions: None,
+        }
+    }
+
+    pub fn with_reasoning_effort(mut self, reasoning_effort: ModelReasoningEffort) -> Self {
+        self.reasoning_effort = Some(reasoning_effort);
+        self
+    }
+
+    pub fn with_developer_instructions(
+        mut self,
+        developer_instructions: impl Into<String>,
+    ) -> Self {
+        self.developer_instructions = Some(developer_instructions.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollaborationMode {
+    pub mode: CollaborationModeKind,
+    pub settings: CollaborationModeSettings,
+}
+
+impl CollaborationMode {
+    pub fn new(mode: CollaborationModeKind, settings: CollaborationModeSettings) -> Self {
+        Self { mode, settings }
+    }
+
+    fn as_value(&self) -> Value {
+        let mut settings = Map::new();
+        settings.insert(
+            "model".to_string(),
+            Value::String(self.settings.model.clone()),
+        );
+        if let Some(reasoning_effort) = self.settings.reasoning_effort {
+            settings.insert(
+                "reasoning_effort".to_string(),
+                Value::String(reasoning_effort.as_str().to_string()),
+            );
+        }
+        if let Some(instructions) = &self.settings.developer_instructions {
+            settings.insert(
+                "developer_instructions".to_string(),
+                Value::String(instructions.clone()),
+            );
+        }
+
+        let mut value = Map::new();
+        value.insert(
+            "mode".to_string(),
+            Value::String(self.mode.as_str().to_string()),
+        );
+        value.insert("settings".to_string(), Value::Object(settings));
+        Value::Object(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicToolSpec {
+    pub name: String,
+    pub description: String,
+    pub input_schema: Value,
+}
+
+impl DynamicToolSpec {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: description.into(),
+            input_schema,
+        }
+    }
+
+    fn as_value(&self) -> Value {
+        let mut value = Map::new();
+        value.insert("name".to_string(), Value::String(self.name.clone()));
+        value.insert(
+            "description".to_string(),
+            Value::String(self.description.clone()),
+        );
+        value.insert("inputSchema".to_string(), self.input_schema.clone());
+        Value::Object(value)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ThreadOptions {
     pub model: Option<String>,
+    pub model_provider: Option<String>,
     pub sandbox_mode: Option<SandboxMode>,
+    pub sandbox_policy: Option<Value>,
     pub working_directory: Option<String>,
     pub skip_git_repo_check: Option<bool>,
     pub model_reasoning_effort: Option<ModelReasoningEffort>,
+    pub model_reasoning_summary: Option<ModelReasoningSummary>,
     pub network_access_enabled: Option<bool>,
     pub web_search_mode: Option<WebSearchMode>,
     pub web_search_enabled: Option<bool>,
     pub approval_policy: Option<ApprovalMode>,
     pub additional_directories: Option<Vec<String>>,
+    pub personality: Option<Personality>,
+    pub base_instructions: Option<String>,
+    pub developer_instructions: Option<String>,
+    pub ephemeral: Option<bool>,
+    pub collaboration_mode: Option<CollaborationMode>,
+    pub config: Option<Map<String, Value>>,
+    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
+    pub experimental_raw_events: Option<bool>,
+    pub persist_extended_history: Option<bool>,
+}
+
+impl ThreadOptions {
+    pub fn builder() -> ThreadOptionsBuilder {
+        ThreadOptionsBuilder::new()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ThreadOptionsBuilder {
+    options: ThreadOptions,
+}
+
+impl ThreadOptionsBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(self) -> ThreadOptions {
+        self.options
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.options.model = Some(model.into());
+        self
+    }
+
+    pub fn model_provider(mut self, model_provider: impl Into<String>) -> Self {
+        self.options.model_provider = Some(model_provider.into());
+        self
+    }
+
+    pub fn sandbox_mode(mut self, sandbox_mode: SandboxMode) -> Self {
+        self.options.sandbox_mode = Some(sandbox_mode);
+        self
+    }
+
+    pub fn sandbox_policy(mut self, sandbox_policy: Value) -> Self {
+        self.options.sandbox_policy = Some(sandbox_policy);
+        self
+    }
+
+    pub fn working_directory(mut self, working_directory: impl Into<String>) -> Self {
+        self.options.working_directory = Some(working_directory.into());
+        self
+    }
+
+    pub fn skip_git_repo_check(mut self, enabled: bool) -> Self {
+        self.options.skip_git_repo_check = Some(enabled);
+        self
+    }
+
+    pub fn model_reasoning_effort(mut self, model_reasoning_effort: ModelReasoningEffort) -> Self {
+        self.options.model_reasoning_effort = Some(model_reasoning_effort);
+        self
+    }
+
+    pub fn model_reasoning_summary(
+        mut self,
+        model_reasoning_summary: ModelReasoningSummary,
+    ) -> Self {
+        self.options.model_reasoning_summary = Some(model_reasoning_summary);
+        self
+    }
+
+    pub fn network_access_enabled(mut self, enabled: bool) -> Self {
+        self.options.network_access_enabled = Some(enabled);
+        self
+    }
+
+    pub fn web_search_mode(mut self, web_search_mode: WebSearchMode) -> Self {
+        self.options.web_search_mode = Some(web_search_mode);
+        self
+    }
+
+    pub fn web_search_enabled(mut self, enabled: bool) -> Self {
+        self.options.web_search_enabled = Some(enabled);
+        self
+    }
+
+    pub fn approval_policy(mut self, approval_policy: ApprovalMode) -> Self {
+        self.options.approval_policy = Some(approval_policy);
+        self
+    }
+
+    pub fn additional_directories(mut self, additional_directories: Vec<String>) -> Self {
+        self.options.additional_directories = Some(additional_directories);
+        self
+    }
+
+    pub fn add_directory(mut self, directory: impl Into<String>) -> Self {
+        self.options
+            .additional_directories
+            .get_or_insert_with(Vec::new)
+            .push(directory.into());
+        self
+    }
+
+    pub fn personality(mut self, personality: Personality) -> Self {
+        self.options.personality = Some(personality);
+        self
+    }
+
+    pub fn base_instructions(mut self, base_instructions: impl Into<String>) -> Self {
+        self.options.base_instructions = Some(base_instructions.into());
+        self
+    }
+
+    pub fn developer_instructions(mut self, developer_instructions: impl Into<String>) -> Self {
+        self.options.developer_instructions = Some(developer_instructions.into());
+        self
+    }
+
+    pub fn ephemeral(mut self, ephemeral: bool) -> Self {
+        self.options.ephemeral = Some(ephemeral);
+        self
+    }
+
+    pub fn collaboration_mode(mut self, collaboration_mode: CollaborationMode) -> Self {
+        self.options.collaboration_mode = Some(collaboration_mode);
+        self
+    }
+
+    pub fn config(mut self, config: Map<String, Value>) -> Self {
+        self.options.config = Some(config);
+        self
+    }
+
+    pub fn insert_config(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.options
+            .config
+            .get_or_insert_with(Map::new)
+            .insert(key.into(), value);
+        self
+    }
+
+    pub fn dynamic_tools(mut self, dynamic_tools: Vec<DynamicToolSpec>) -> Self {
+        self.options.dynamic_tools = Some(dynamic_tools);
+        self
+    }
+
+    pub fn experimental_raw_events(mut self, enabled: bool) -> Self {
+        self.options.experimental_raw_events = Some(enabled);
+        self
+    }
+
+    pub fn persist_extended_history(mut self, enabled: bool) -> Self {
+        self.options.persist_extended_history = Some(enabled);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -723,24 +1040,46 @@ fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartPa
             ),
         );
     }
+    if let Some(config) = &options.config {
+        extra.insert("config".to_string(), Value::Object(config.clone()));
+    }
+    if let Some(dynamic_tools) = &options.dynamic_tools {
+        extra.insert(
+            "dynamicTools".to_string(),
+            Value::Array(
+                dynamic_tools
+                    .iter()
+                    .map(DynamicToolSpec::as_value)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(enabled) = options.experimental_raw_events {
+        extra.insert("experimentalRawEvents".to_string(), Value::Bool(enabled));
+    }
+    if let Some(enabled) = options.persist_extended_history {
+        extra.insert("persistExtendedHistory".to_string(), Value::Bool(enabled));
+    }
 
     requests::ThreadStartParams {
         model: options.model.clone(),
-        model_provider: None,
+        model_provider: options.model_provider.clone(),
         cwd: options.working_directory.clone(),
         approval_policy: options
             .approval_policy
             .map(|mode| mode.as_str().to_string()),
         sandbox: options.sandbox_mode.map(|mode| mode.as_str().to_string()),
-        sandbox_policy: None,
+        sandbox_policy: options.sandbox_policy.clone(),
         effort: options
             .model_reasoning_effort
             .map(|effort| effort.as_str().to_string()),
-        summary: None,
-        personality: None,
-        ephemeral: None,
-        base_instructions: None,
-        developer_instructions: None,
+        summary: options
+            .model_reasoning_summary
+            .map(|summary| summary.as_str().to_string()),
+        personality: options.personality.map(|value| value.as_str().to_string()),
+        ephemeral: options.ephemeral,
+        base_instructions: options.base_instructions.clone(),
+        developer_instructions: options.developer_instructions.clone(),
         extra,
     }
 }
@@ -778,23 +1117,31 @@ fn build_turn_start_params(
             ),
         );
     }
+    if let Some(collaboration_mode) = &options.collaboration_mode {
+        extra.insert(
+            "collaborationMode".to_string(),
+            collaboration_mode.as_value(),
+        );
+    }
 
     requests::TurnStartParams {
         thread_id: thread_id.to_string(),
         input: normalize_input(input),
         cwd: options.working_directory.clone(),
         model: options.model.clone(),
-        model_provider: None,
+        model_provider: options.model_provider.clone(),
         effort: options
             .model_reasoning_effort
             .map(|effort| effort.as_str().to_string()),
-        summary: None,
-        personality: None,
+        summary: options
+            .model_reasoning_summary
+            .map(|summary| summary.as_str().to_string()),
+        personality: options.personality.map(|value| value.as_str().to_string()),
         output_schema: turn_options.output_schema.clone(),
         approval_policy: options
             .approval_policy
             .map(|mode| mode.as_str().to_string()),
-        sandbox_policy: None,
+        sandbox_policy: options.sandbox_policy.clone(),
         collaboration_mode: None,
         extra,
     }
@@ -1232,5 +1579,152 @@ mod tests {
             }
             other => panic!("expected unknown item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn thread_options_builder_maps_extended_protocol_fields() {
+        let collaboration_mode = CollaborationMode::new(
+            CollaborationModeKind::Default,
+            CollaborationModeSettings::new("gpt-5.2-codex")
+                .with_reasoning_effort(ModelReasoningEffort::High),
+        );
+
+        let options = ThreadOptions::builder()
+            .model("gpt-5.2-codex")
+            .model_provider("mock_provider")
+            .sandbox_mode(SandboxMode::WorkspaceWrite)
+            .sandbox_policy(json!({"type": "dangerFullAccess"}))
+            .working_directory("/tmp/workspace")
+            .skip_git_repo_check(true)
+            .model_reasoning_effort(ModelReasoningEffort::None)
+            .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .network_access_enabled(true)
+            .web_search_mode(WebSearchMode::Live)
+            .web_search_enabled(false)
+            .approval_policy(ApprovalMode::OnRequest)
+            .add_directory("/tmp/one")
+            .add_directory("/tmp/two")
+            .personality(Personality::Pragmatic)
+            .base_instructions("base instructions")
+            .developer_instructions("developer instructions")
+            .ephemeral(true)
+            .insert_config("sandbox_workspace_write.network_access", Value::Bool(true))
+            .dynamic_tools(vec![DynamicToolSpec::new(
+                "demo_tool",
+                "Demo dynamic tool",
+                json!({"type": "object"}),
+            )])
+            .experimental_raw_events(true)
+            .persist_extended_history(true)
+            .collaboration_mode(collaboration_mode)
+            .build();
+
+        let thread_params = build_thread_start_params(&options);
+        assert_eq!(thread_params.model.as_deref(), Some("gpt-5.2-codex"));
+        assert_eq!(
+            thread_params.model_provider.as_deref(),
+            Some("mock_provider")
+        );
+        assert_eq!(thread_params.cwd.as_deref(), Some("/tmp/workspace"));
+        assert_eq!(thread_params.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(thread_params.sandbox.as_deref(), Some("workspace-write"));
+        assert_eq!(
+            thread_params.sandbox_policy,
+            Some(json!({"type": "dangerFullAccess"}))
+        );
+        assert_eq!(thread_params.effort.as_deref(), Some("none"));
+        assert_eq!(thread_params.summary.as_deref(), Some("auto"));
+        assert_eq!(thread_params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(thread_params.ephemeral, Some(true));
+        assert_eq!(
+            thread_params.base_instructions.as_deref(),
+            Some("base instructions")
+        );
+        assert_eq!(
+            thread_params.developer_instructions.as_deref(),
+            Some("developer instructions")
+        );
+        assert_eq!(
+            thread_params.extra.get("skipGitRepoCheck"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            thread_params.extra.get("webSearchMode"),
+            Some(&Value::String("live".to_string()))
+        );
+        assert_eq!(
+            thread_params.extra.get("webSearchEnabled"),
+            Some(&Value::Bool(false))
+        );
+        assert_eq!(
+            thread_params.extra.get("networkAccessEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            thread_params.extra.get("additionalDirectories"),
+            Some(&json!(["/tmp/one", "/tmp/two"]))
+        );
+        assert_eq!(
+            thread_params.extra.get("config"),
+            Some(&json!({"sandbox_workspace_write.network_access": true}))
+        );
+        assert_eq!(
+            thread_params.extra.get("dynamicTools"),
+            Some(&json!([{
+                "name": "demo_tool",
+                "description": "Demo dynamic tool",
+                "inputSchema": {"type": "object"}
+            }]))
+        );
+        assert_eq!(
+            thread_params.extra.get("experimentalRawEvents"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            thread_params.extra.get("persistExtendedHistory"),
+            Some(&Value::Bool(true))
+        );
+
+        let turn_params = build_turn_start_params(
+            "thread_123",
+            Input::text("hello"),
+            &options,
+            &TurnOptions::default(),
+        );
+        assert_eq!(turn_params.model_provider.as_deref(), Some("mock_provider"));
+        assert_eq!(turn_params.effort.as_deref(), Some("none"));
+        assert_eq!(turn_params.summary.as_deref(), Some("auto"));
+        assert_eq!(turn_params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(
+            turn_params.sandbox_policy,
+            Some(json!({"type": "dangerFullAccess"}))
+        );
+        assert_eq!(
+            turn_params.extra.get("collaborationMode"),
+            Some(&json!({
+                "mode": "default",
+                "settings": {
+                    "model": "gpt-5.2-codex",
+                    "reasoning_effort": "high"
+                }
+            }))
+        );
+    }
+
+    #[test]
+    fn thread_options_builder_skip_git_repo_check_matches_cli_flag_semantics() {
+        let enabled = ThreadOptions::builder().skip_git_repo_check(true).build();
+        let enabled_params = build_thread_start_params(&enabled);
+        assert_eq!(
+            enabled_params.extra.get("skipGitRepoCheck"),
+            Some(&Value::Bool(true))
+        );
+
+        let disabled = ThreadOptions::builder().skip_git_repo_check(false).build();
+        let disabled_params = build_thread_start_params(&disabled);
+        assert_eq!(
+            disabled_params.extra.get("skipGitRepoCheck"),
+            Some(&Value::Bool(false))
+        );
     }
 }

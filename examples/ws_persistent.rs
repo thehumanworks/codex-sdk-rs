@@ -10,10 +10,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
 
-    let mut thread = client.start_thread(ThreadOptions {
-        model: Some("gpt-5.3-codex-spark".to_string()),
-        ..Default::default()
-    });
+    let mut thread = client.start_thread(
+        ThreadOptions::builder()
+            .model("gpt-5.3-codex-spark")
+            .skip_git_repo_check(true)
+            .build(),
+    );
     let turn = thread
         .run(
             "Write a haiku about Codex Spark, and its speed!",
