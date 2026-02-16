@@ -11,7 +11,10 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 ## Features
 
 - `stdio` (default): spawn `codex app-server` locally.
-- `ws`: connect to an externally hosted app-server websocket endpoint.
+- `ws`: websocket transport with loopback daemon management.
+  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), the SDK reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
+  - Non-loopback URLs remain connect-only (no process management).
+  - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
 
 ## Quickstart (stdio)
 
@@ -37,6 +40,51 @@ println!("turn: {}", turn.turn.id);
 # Ok(())
 # }
 ```
+
+## Quickstart (high-level typed API)
+
+```rust
+use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::StdioConfig;
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let mut thread = codex.start_thread(ThreadOptions::default());
+
+let turn = thread
+    .run("Summarize this repository in two bullet points.", TurnOptions::default())
+    .await?;
+
+println!("thread: {}", thread.id().unwrap_or("<unknown>"));
+println!("response: {}", turn.final_response);
+# Ok(())
+# }
+```
+
+Use `run_streamed(...)` when you need incremental item and lifecycle events.
+
+## Quickstart (ws, persistent loopback daemon + high-level api)
+
+```rust
+use codex_app_server_sdk::api::{ThreadOptions, TurnOptions};
+use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = CodexClient::connect_ws(WsConfig {
+    url: "ws://127.0.0.1:4222".to_string(),
+    options: ClientOptions::default(),
+}).await?;
+
+let mut thread = client.start_thread(ThreadOptions::default());
+let turn = thread
+    .run("Reply with exactly: ok", TurnOptions::default())
+    .await?;
+println!("response: {}", turn.final_response);
+# Ok(())
+# }
+```
+
+The same `start_thread(...)`, `run(...)`, and `run_streamed(...)` flow works for stdio and ws transports.
 
 ## Reliability model
 
@@ -83,6 +131,9 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `examples/turn_start_stream.rs`
 - `examples/auth_api_key.rs`
 - `examples/raw_fallback.rs`
+- `examples/ws_persistent.rs`
+- `examples/high_level_run.rs`
+- `examples/high_level_streamed.rs`
 
 ## Integration tests
 
@@ -90,6 +141,8 @@ These tests execute against a real local `codex app-server` process:
 
 ```bash
 cargo test --test integration_stdio -- --ignored --nocapture
+cargo test --test integration_api_stdio -- --ignored --nocapture
+cargo test --features ws --test integration_ws -- --ignored --nocapture
 ```
 
 ## License

@@ -3,6 +3,7 @@
 ## Project Structure & Module Organization
 - `src/lib.rs`: crate exports.
 - `src/client/mod.rs`: async client, RPC lifecycle, handshake/readiness.
+- `src/api.rs`: high-level typed `Codex`/`Thread` convenience API.
 - `src/transport/`: `stdio` transport (default) and `ws` transport (feature-gated).
 - `src/protocol/`: typed request/response/notification/server-request models.
 - `src/events/mod.rs`: event parsing and enum mapping.
@@ -16,6 +17,8 @@
 - `cargo check --features ws`: websocket feature validation.
 - `cargo test -- --nocapture`: unit and non-ignored tests.
 - `cargo test --test integration_stdio -- --ignored --nocapture`: real `codex app-server` tests.
+- `cargo test --test integration_api_stdio -- --ignored --nocapture`: real high-level API tests.
+- `cargo test --features ws --test integration_ws -- --ignored --nocapture`: real websocket transport tests.
 - `cargo run --example raw_fallback`: raw RPC smoke test.
 - `cargo run --example turn_start_stream`: live turn streaming test.
 
@@ -103,6 +106,8 @@
 - Live integration tests require local `codex app-server` and active auth.
 - `auth_api_key` example requires `OPENAI_API_KEY`.
 - Compatibility policy is enforced in `src/compat.rs`; update tests/docs when adjusting version ranges.
+- With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
+- `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
 
 ## Critical Paths and Review Focus
 - High-risk paths:

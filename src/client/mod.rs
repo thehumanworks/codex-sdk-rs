@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 
+use crate::api::{Codex, Thread, ThreadOptions};
 use crate::compat::{CompatibilityPolicy, check_cli_version, parse_cli_version};
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
 use crate::events::{
@@ -24,6 +25,8 @@ use crate::transport::TransportHandle;
 use crate::transport::stdio::spawn_stdio_transport;
 #[cfg(feature = "ws")]
 use crate::transport::ws::connect_ws_transport;
+#[cfg(feature = "ws")]
+use crate::transport::ws_daemon::ensure_local_ws_app_server;
 
 type PendingMap = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
 type RefreshFuture = Pin<
@@ -131,6 +134,7 @@ impl CodexClient {
 
     #[cfg(feature = "ws")]
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
+        ensure_local_ws_app_server(&config.url).await?;
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }
@@ -151,6 +155,18 @@ impl CodexClient {
 
         tokio::spawn(run_inbound_loop(handle.inbound, inner.clone()));
         Self { inner }
+    }
+
+    pub fn as_api(&self) -> Codex {
+        Codex::from_client(self.clone())
+    }
+
+    pub fn start_thread(&self, options: ThreadOptions) -> Thread {
+        self.as_api().start_thread(options)
+    }
+
+    pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
+        self.as_api().resume_thread(id, options)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {
