@@ -10,7 +10,7 @@ keywords = ["codex", "openai", "json-rpc", "sdk"]
 categories = ["api-bindings", "asynchronous"]
 
 [features]
-default = ["stdio"]
+default = ["stdio", "ws"]
 stdio = []
 ws = ["dep:tokio-tungstenite", "dep:url"]
 
