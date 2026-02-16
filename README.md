@@ -201,7 +201,20 @@ cargo run --bin spark -- "Summarize this repository in one sentence."
 - reasoning effort: `xhigh`
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
-Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored; `skills` and Markdown body are applied as developer instructions.
+Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored.
+`description` (or `name` fallback), `skills`, and Markdown body are rendered into `developer_instructions` as:
+
+```text
+<ROLE>...</ROLE>
+<INSTRUCTIONS>
+	<SKILLS>
+		<SKILL>...</SKILL>
+	</SKILLS>
+	<CONTENT>
+		...
+	</CONTENT>
+</INSTRUCTIONS>
+```
 
 ## Integration tests
 

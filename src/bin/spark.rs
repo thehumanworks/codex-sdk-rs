@@ -43,6 +43,8 @@ struct LoadedAgent {
 struct AgentFrontmatter {
     name: String,
     #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
     skills: Option<SkillsField>,
 }
 
@@ -351,8 +353,14 @@ fn load_agent_profile_from_dir(
     }
 
     let skills = normalize_skills(frontmatter.skills);
+    let description = frontmatter
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&frontmatter.name);
     let body = body_raw.trim().to_string();
-    let instructions = compose_instructions(&frontmatter.name, &skills, &body);
+    let instructions = compose_instructions(description, &skills, &body);
 
     Ok(LoadedAgent { instructions })
 }
@@ -390,23 +398,22 @@ fn normalize_skills(skills: Option<SkillsField>) -> Vec<String> {
         .collect()
 }
 
-fn compose_instructions(name: &str, skills: &[String], body: &str) -> String {
-    let mut metadata = format!("<agent>\nname: {name}\n");
-    if !skills.is_empty() {
-        metadata.push_str("skills:\n");
-        for skill in skills {
-            metadata.push_str("- ");
-            metadata.push_str(skill);
-            metadata.push('\n');
-        }
-    }
-    metadata.push_str("</agent>");
+fn compose_instructions(description: &str, skills: &[String], body: &str) -> String {
+    let role = format!("<ROLE>{description}</ROLE>");
+    let skill_lines = if skills.is_empty() {
+        String::new()
+    } else {
+        skills
+            .iter()
+            .map(|skill| format!("\t\t<SKILL>{skill}</SKILL>"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let instructions = format!(
+        "<INSTRUCTIONS>\n\t<SKILLS>\n{skill_lines}\n\t</SKILLS>\n\t<CONTENT>\n\t\t{body}\n\t</CONTENT>\n</INSTRUCTIONS>"
+    );
 
-    if body.is_empty() {
-        return metadata;
-    }
-
-    format!("{metadata}\n\n{body}")
+    format!("{role}\n{instructions}")
 }
 
 #[cfg(test)]
@@ -521,6 +528,7 @@ instructions
             "\
 ---
 name: spark
+description: Spark coding assistant
 skills:
   - checks
   - lint
@@ -531,10 +539,38 @@ Do the task.
         .expect("write");
 
         let profile = load_agent_profile_from_dir("spark", &dir).expect("load profile");
+        assert!(
+            profile
+                .instructions
+                .starts_with("<ROLE>Spark coding assistant</ROLE>\n<INSTRUCTIONS>")
+        );
+        assert!(profile.instructions.contains("<SKILLS>"));
+        assert!(profile.instructions.contains("<SKILL>checks</SKILL>"));
+        assert!(profile.instructions.contains("<SKILL>lint</SKILL>"));
+        assert!(profile.instructions.contains("<CONTENT>"));
         assert!(profile.instructions.contains("Do the task."));
-        assert!(profile.instructions.contains("skills:"));
-        assert!(profile.instructions.contains("- checks"));
-        assert!(profile.instructions.contains("- lint"));
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_agent_profile_falls_back_to_name_when_description_missing() {
+        let dir = make_temp_dir();
+        let path = dir.join("spark.md");
+        fs::write(
+            &path,
+            "\
+---
+name: spark
+skills: [checks]
+---
+Do the task.
+",
+        )
+        .expect("write");
+
+        let profile = load_agent_profile_from_dir("spark", &dir).expect("load profile");
+        assert!(profile.instructions.starts_with("<ROLE>spark</ROLE>"));
 
         fs::remove_dir_all(dir).expect("cleanup");
     }
