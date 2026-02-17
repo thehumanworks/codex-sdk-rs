@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codex_app_server_sdk::client::StdioConfig;
 use codex_app_server_sdk::events::{ServerEvent, ServerNotification};
@@ -10,8 +13,40 @@ use serde_json::json;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
 
+fn isolated_codex_home() -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "codex-sdk-rs-integration-home-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::create_dir_all(path.join(".codex")).expect("create isolated codex home");
+    path
+}
+
+fn isolated_stdio_config() -> StdioConfig {
+    let mut config = StdioConfig::default();
+    let mut env = HashMap::new();
+    let isolated_home = isolated_codex_home();
+    env.insert(
+        "HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    env.insert(
+        "CODEX_HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        env.insert("OPENAI_API_KEY".to_string(), api_key);
+    }
+    config.env = env;
+    config
+}
+
 async fn spawn_initialized_client() -> Result<CodexClient, Box<dyn std::error::Error>> {
-    let client = CodexClient::spawn_stdio(StdioConfig::default()).await?;
+    let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
     client
         .initialize(InitializeParams::new(ClientInfo::new(
             "integration_test",
@@ -26,7 +61,7 @@ async fn spawn_initialized_client() -> Result<CodexClient, Box<dyn std::error::E
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
 async fn initialize_over_stdio() -> Result<(), Box<dyn std::error::Error>> {
-    let client = CodexClient::spawn_stdio(StdioConfig::default()).await?;
+    let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
 
     client
         .initialize(InitializeParams::new(ClientInfo::new(
@@ -45,7 +80,7 @@ async fn initialize_over_stdio() -> Result<(), Box<dyn std::error::Error>> {
 #[ignore = "requires local codex app-server runtime"]
 async fn rejects_requests_before_initialized_notification() -> Result<(), Box<dyn std::error::Error>>
 {
-    let client = CodexClient::spawn_stdio(StdioConfig::default()).await?;
+    let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
     client
         .initialize(InitializeParams::new(ClientInfo::new(
             "integration_test",

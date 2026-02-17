@@ -33,7 +33,10 @@ enum ProbeState {
     Unavailable,
 }
 
-pub async fn ensure_local_ws_app_server(url: &str) -> Result<(), ClientError> {
+pub async fn ensure_local_ws_app_server(
+    url: &str,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(), ClientError> {
     let Some(target) = parse_managed_ws_target(url)? else {
         return Ok(());
     };
@@ -48,7 +51,7 @@ pub async fn ensure_local_ws_app_server(url: &str) -> Result<(), ClientError> {
         return Ok(());
     }
 
-    spawn_daemon_launcher_thread(&target)?;
+    spawn_daemon_launcher_thread(&target, env)?;
     wait_for_ready(&target).await
 }
 
@@ -161,13 +164,17 @@ fn is_retryable_connect_error(kind: ErrorKind) -> bool {
     )
 }
 
-fn spawn_daemon_launcher_thread(target: &ManagedWsTarget) -> Result<(), ClientError> {
+fn spawn_daemon_launcher_thread(
+    target: &ManagedWsTarget,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<(), ClientError> {
     let target_for_thread = target.clone();
     let target_for_error = target.clone();
+    let env_for_thread = env.clone();
     let (tx, rx) = std::sync::mpsc::channel::<Result<(), std::io::Error>>();
 
     thread::spawn(move || {
-        let result = spawn_daemon_process(&target_for_thread);
+        let result = spawn_daemon_process(&target_for_thread, &env_for_thread);
         let _ = tx.send(result);
     });
 
@@ -186,7 +193,10 @@ fn spawn_daemon_launcher_thread(target: &ManagedWsTarget) -> Result<(), ClientEr
     }
 }
 
-fn spawn_daemon_process(target: &ManagedWsTarget) -> std::io::Result<()> {
+fn spawn_daemon_process(
+    target: &ManagedWsTarget,
+    env: &std::collections::HashMap<String, String>,
+) -> std::io::Result<()> {
     fs::create_dir_all(DAEMON_LOG_DIR)?;
 
     let log_file = OpenOptions::new()
@@ -195,14 +205,20 @@ fn spawn_daemon_process(target: &ManagedWsTarget) -> std::io::Result<()> {
         .open(&target.log_path)?;
     let log_file_stderr = log_file.try_clone()?;
 
-    let _child = Command::new("codex")
+    let mut command = Command::new("codex");
+    command
         .arg("app-server")
         .arg("--listen")
         .arg(&target.listen_url)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file_stderr))
-        .spawn()?;
+        .stderr(Stdio::from(log_file_stderr));
+
+    for (key, value) in env {
+        command.env(key, value);
+    }
+
+    let _child = command.spawn()?;
 
     Ok(())
 }

@@ -1,7 +1,11 @@
 #![cfg(feature = "ws")]
 
+use std::collections::HashMap;
+use std::fs;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use codex_app_server_sdk::api::{ThreadEvent, ThreadOptions, TurnOptions};
 use codex_app_server_sdk::protocol::requests::{ClientInfo, InitializeParams};
@@ -15,11 +19,42 @@ fn reserve_local_ws_url() -> Result<String, Box<dyn std::error::Error>> {
     Ok(format!("ws://127.0.0.1:{}", addr.port()))
 }
 
+fn isolated_codex_home() -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "codex-sdk-rs-ws-integration-home-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::create_dir_all(path.join(".codex")).expect("create isolated codex home");
+    path
+}
+
+fn isolated_ws_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let isolated_home = isolated_codex_home();
+    env.insert(
+        "HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    env.insert(
+        "CODEX_HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        env.insert("OPENAI_API_KEY".to_string(), api_key);
+    }
+    env
+}
+
 async fn connect_initialized_ws_client(
     url: &str,
 ) -> Result<CodexClient, Box<dyn std::error::Error>> {
     let client = CodexClient::connect_ws(WsConfig {
         url: url.to_string(),
+        env: isolated_ws_env(),
         options: ClientOptions::default(),
     })
     .await?;
