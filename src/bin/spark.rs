@@ -2,6 +2,7 @@ use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
@@ -115,7 +116,11 @@ async fn run() -> Result<(), SparkError> {
         thread_options = thread_options.developer_instructions(agent.instructions);
     }
 
-    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let codex_binary = resolve_codex_binary()?;
+    let mut stdio_config = StdioConfig::default();
+    stdio_config.codex_binary = codex_binary;
+
+    let codex = Codex::spawn_stdio(stdio_config).await?;
     let mut thread = codex.start_thread(thread_options.build());
     let mut streamed = thread.run_streamed(prompt, TurnOptions::default()).await?;
 
@@ -178,6 +183,54 @@ async fn run() -> Result<(), SparkError> {
     }
 
     Ok(())
+}
+
+fn resolve_codex_binary() -> Result<String, SparkError> {
+    resolve_codex_binary_with(|program, args| {
+        Command::new(program)
+            .args(args)
+            .output()
+            .map(|output| CommandResult {
+                success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            })
+    })
+}
+
+#[derive(Debug)]
+struct CommandResult {
+    success: bool,
+    stdout: String,
+}
+
+fn resolve_codex_binary_with<F>(mut run_command: F) -> Result<String, SparkError>
+where
+    F: FnMut(&str, &[&str]) -> io::Result<CommandResult>,
+{
+    let result = run_command("which", &["codex"]).map_err(|error| {
+        SparkError::Config(format!(
+            "failed to resolve codex binary via `which codex`: {error}"
+        ))
+    })?;
+
+    if !result.success {
+        return Err(SparkError::Config(
+            "could not locate `codex` on PATH (which codex returned non-zero status)".to_string(),
+        ));
+    }
+
+    let resolved = result
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| {
+            SparkError::Config(
+                "could not locate `codex` on PATH (which codex produced empty output)".to_string(),
+            )
+        })?;
+
+    Ok(resolved.to_string())
 }
 
 fn print_chunk(stdout: &mut io::Stdout, chunk: &str) -> Result<(), SparkError> {
@@ -573,6 +626,70 @@ Do the task.
         assert!(profile.instructions.starts_with("<ROLE>spark</ROLE>"));
 
         fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn resolve_codex_binary_parses_trimmed_path() {
+        let resolved = resolve_codex_binary_with(|program, args| {
+            assert_eq!(program, "which");
+            assert_eq!(args, ["codex"]);
+            Ok(CommandResult {
+                success: true,
+                stdout: " /usr/local/bin/codex  \n".to_string(),
+            })
+        })
+        .expect("resolve codex");
+
+        assert_eq!(resolved, "/usr/local/bin/codex");
+    }
+
+    #[test]
+    fn resolve_codex_binary_uses_first_non_empty_line() {
+        let resolved = resolve_codex_binary_with(|_, _| {
+            Ok(CommandResult {
+                success: true,
+                stdout: "\n/usr/bin/codex\n/opt/bin/codex\n".to_string(),
+            })
+        })
+        .expect("resolve codex");
+
+        assert_eq!(resolved, "/usr/bin/codex");
+    }
+
+    #[test]
+    fn resolve_codex_binary_errors_when_which_fails() {
+        let error = resolve_codex_binary_with(|_, _| {
+            Ok(CommandResult {
+                success: false,
+                stdout: String::new(),
+            })
+        })
+        .expect_err("expected failure");
+
+        assert!(matches!(error, SparkError::Config(_)));
+    }
+
+    #[test]
+    fn resolve_codex_binary_errors_on_empty_output() {
+        let error = resolve_codex_binary_with(|_, _| {
+            Ok(CommandResult {
+                success: true,
+                stdout: "   \n".to_string(),
+            })
+        })
+        .expect_err("expected failure");
+
+        assert!(matches!(error, SparkError::Config(_)));
+    }
+
+    #[test]
+    fn resolve_codex_binary_errors_when_command_cannot_run() {
+        let error = resolve_codex_binary_with(|_, _| {
+            Err(io::Error::new(io::ErrorKind::NotFound, "which not found"))
+        })
+        .expect_err("expected failure");
+
+        assert!(matches!(error, SparkError::Config(_)));
     }
 
     fn make_temp_dir() -> PathBuf {

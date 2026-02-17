@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
 use codex_app_server_sdk::{CodexClient, OpenAiSerializable, StdioConfig};
@@ -6,6 +9,38 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);
+
+fn isolated_codex_home() -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "codex-sdk-rs-api-integration-home-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::create_dir_all(path.join(".codex")).expect("create isolated codex home");
+    path
+}
+
+fn isolated_stdio_config() -> StdioConfig {
+    let mut config = StdioConfig::default();
+    let mut env = HashMap::new();
+    let isolated_home = isolated_codex_home();
+    env.insert(
+        "HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    env.insert(
+        "CODEX_HOME".to_string(),
+        isolated_home.to_string_lossy().to_string(),
+    );
+    if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
+        env.insert("OPENAI_API_KEY".to_string(), api_key);
+    }
+    config.env = env;
+    config
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]
 struct SchemaConstrainedResponse {
@@ -15,7 +50,7 @@ struct SchemaConstrainedResponse {
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
 async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::error::Error>> {
-    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
 
     let result = thread
@@ -38,7 +73,7 @@ async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::erro
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
 async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::error::Error>> {
-    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
 
     let mut streamed = thread
@@ -86,7 +121,7 @@ async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::e
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
 async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::error::Error>> {
-    let client = CodexClient::spawn_stdio(StdioConfig::default()).await?;
+    let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = client.start_thread(ThreadOptions::default());
 
     let result = thread
@@ -106,7 +141,7 @@ async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::e
 #[ignore = "requires local codex app-server runtime"]
 async fn run_respects_output_schema_for_typed_deserialization()
 -> Result<(), Box<dyn std::error::Error>> {
-    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
 
     let turn_options = TurnOptions::builder()

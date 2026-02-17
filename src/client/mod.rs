@@ -75,6 +75,7 @@ impl Default for StdioConfig {
 #[derive(Debug, Clone)]
 pub struct WsConfig {
     pub url: String,
+    pub env: HashMap<String, String>,
     pub options: ClientOptions,
 }
 
@@ -134,7 +135,7 @@ impl CodexClient {
 
     #[cfg(feature = "ws")]
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
-        ensure_local_ws_app_server(&config.url).await?;
+        ensure_local_ws_app_server(&config.url, &config.env).await?;
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }

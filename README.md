@@ -119,10 +119,12 @@ println!("{}", reply.answer);
 ```rust
 use codex_app_server_sdk::api::{ThreadOptions, TurnOptions};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
+use std::collections::HashMap;
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let client = CodexClient::connect_ws(WsConfig {
     url: "ws://127.0.0.1:4222".to_string(),
+    env: HashMap::new(),
     options: ClientOptions::default(),
 }).await?;
 
@@ -201,6 +203,8 @@ cargo run --bin spark -- "Summarize this repository in one sentence."
 - reasoning effort: `xhigh`
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
+At startup, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
+If startup fails with a codex lookup error, run `which codex` and ensure your shell PATH includes the desired Codex CLI install.
 Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored.
 `description` (or `name` fallback), `skills`, and Markdown body are rendered into `developer_instructions` as:
 

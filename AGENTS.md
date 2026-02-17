@@ -105,6 +105,7 @@
 
 ## Known Runtime Expectations
 - Live integration tests require local `codex app-server` and active auth.
+- If local `~/.codex/config.toml` or `$CODEX_HOME/config.toml` contains unsupported keys, integration tests can fail with config-derivation errors; prefer isolating `HOME`/`CODEX_HOME` in test runtime env when validating SDK behavior independent of user config.
 - `auth_api_key` example requires `OPENAI_API_KEY`.
 - Compatibility policy is enforced in `src/compat.rs`; update tests/docs when adjusting version ranges.
 - With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
