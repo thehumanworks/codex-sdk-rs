@@ -9,15 +9,18 @@ use codex_app_server_sdk::api::{
     Codex, ModelReasoningEffort, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError,
     TurnOptions,
 };
-use codex_app_server_sdk::{ClientError, StdioConfig};
+use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use serde::Deserialize;
+use serde_json::Value;
 use thiserror::Error;
 
 const APP_NAME: &str = "spark";
 const MODEL: &str = "gpt-5.3-codex-spark";
+const THREAD_LIST_PAGE_LIMIT: u32 = 100;
+const MAX_THREAD_LIST_PAGES: usize = 100;
 
 const USAGE: &str = "\
-Usage: spark [--agent NAME] [--final-response] [PROMPT...]
+Usage: spark [--agent NAME] [--final-response] [-c | -r SESSION_ID] [PROMPT...]
 
 Runs one turn with:
   model: gpt-5.3-codex-spark
@@ -25,6 +28,10 @@ Runs one turn with:
 
 Options:
   --agent NAME    Load ~/.codex/agents/NAME.md
+  -c, --continue
+                 Resume the most recent recorded session (codex resume --last equivalent)
+  -r, --resume ID
+                 Resume the specified session id
   --final-response
                  Output only the final message text (no streamed deltas)
   -h, --help      Show this help
@@ -32,9 +39,16 @@ Options:
 If PROMPT is omitted, spark reads the prompt from stdin.
 ";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResumeTarget {
+    Last,
+    SessionId(String),
+}
+
 #[derive(Debug)]
 struct CliArgs {
     agent: Option<String>,
+    resume_target: Option<ResumeTarget>,
     final_response_only: bool,
     prompt_parts: Vec<String>,
 }
@@ -112,12 +126,19 @@ async fn run() -> Result<(), SparkError> {
         ParsedCommand::Run(cli) => cli,
     };
 
-    let prompt = resolve_prompt(cli.prompt_parts)?;
+    let CliArgs {
+        agent,
+        resume_target,
+        final_response_only,
+        prompt_parts,
+    } = cli;
+
+    let prompt = resolve_prompt(prompt_parts)?;
 
     let mut thread_options = ThreadOptions::builder()
         .model(MODEL)
         .model_reasoning_effort(ModelReasoningEffort::XHigh);
-    if let Some(agent_name) = cli.agent {
+    if let Some(agent_name) = agent {
         let agent = load_agent_profile(&agent_name)?;
         thread_options = thread_options.developer_instructions(agent.instructions);
     }
@@ -127,9 +148,17 @@ async fn run() -> Result<(), SparkError> {
     stdio_config.codex_binary = codex_binary;
 
     let codex = Codex::spawn_stdio(stdio_config).await?;
-    let mut thread = codex.start_thread(thread_options.build());
+    let options = thread_options.build();
+    let mut thread = match resume_target {
+        Some(ResumeTarget::Last) => {
+            let thread_id = resolve_last_session_id(&codex).await?;
+            codex.resume_thread(thread_id, options)
+        }
+        Some(ResumeTarget::SessionId(session_id)) => codex.resume_thread(session_id, options),
+        None => codex.start_thread(options),
+    };
 
-    if cli.final_response_only {
+    if final_response_only {
         let final_response = thread.ask(prompt, TurnOptions::default()).await?;
         let mut stdout = io::stdout();
         let mut ended_with_newline = false;
@@ -218,6 +247,73 @@ async fn run() -> Result<(), SparkError> {
     Ok(())
 }
 
+async fn resolve_last_session_id(codex: &Codex) -> Result<String, SparkError> {
+    let mut cursor: Option<String> = None;
+    let mut pages_scanned = 0usize;
+    let mut newest: Option<(i64, String)> = None;
+    let mut fallback_id: Option<String> = None;
+
+    loop {
+        pages_scanned += 1;
+        if pages_scanned > MAX_THREAD_LIST_PAGES {
+            return Err(SparkError::Config(format!(
+                "could not resolve latest session for --continue after scanning {MAX_THREAD_LIST_PAGES} pages"
+            )));
+        }
+
+        let params = requests::ThreadListParams {
+            limit: Some(THREAD_LIST_PAGE_LIMIT),
+            cursor: cursor.clone(),
+            ..Default::default()
+        };
+        let result = codex.thread_list(params).await?;
+
+        for thread in result.data {
+            if fallback_id.is_none() {
+                fallback_id = Some(thread.id.clone());
+            }
+            if let Some(score) = thread_recency_score(&thread) {
+                match &newest {
+                    Some((best_score, _)) if score <= *best_score => {}
+                    _ => newest = Some((score, thread.id)),
+                }
+            }
+        }
+
+        match result.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+
+    if let Some((_, thread_id)) = newest {
+        return Ok(thread_id);
+    }
+    if let Some(thread_id) = fallback_id {
+        return Ok(thread_id);
+    }
+
+    Err(SparkError::Config(
+        "no recorded sessions found for --continue; start a spark session first or use --resume <session_id>".to_string(),
+    ))
+}
+
+fn thread_recency_score(thread: &responses::ThreadSummary) -> Option<i64> {
+    parse_timestamp(thread.extra.get("updatedAt"))
+        .or_else(|| parse_timestamp(thread.extra.get("createdAt")))
+}
+
+fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok())),
+        Value::String(raw) => raw.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
 fn resolve_codex_binary() -> Result<String, SparkError> {
     resolve_codex_binary_with(|program, args| {
         Command::new(program)
@@ -287,6 +383,7 @@ fn ensure_message_separator<W: Write>(
 
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
     let mut agent: Option<String> = None;
+    let mut resume_target: Option<ResumeTarget> = None;
     let mut final_response_only = false;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
@@ -300,6 +397,27 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--help" || arg == "-h" {
                 return Ok(ParsedCommand::Help);
+            }
+            if arg == "-c" || arg == "--continue" {
+                set_resume_target(&mut resume_target, ResumeTarget::Last)?;
+                continue;
+            }
+            if arg == "-r" || arg == "--resume" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --resume".to_string()))?;
+                set_resume_target(
+                    &mut resume_target,
+                    ResumeTarget::SessionId(normalize_session_id(&raw)?),
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--resume=") {
+                set_resume_target(
+                    &mut resume_target,
+                    ResumeTarget::SessionId(normalize_session_id(raw)?),
+                )?;
+                continue;
             }
             if arg == "--agent" {
                 let raw = iter
@@ -341,9 +459,33 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
 
     Ok(ParsedCommand::Run(CliArgs {
         agent,
+        resume_target,
         final_response_only,
         prompt_parts,
     }))
+}
+
+fn set_resume_target(
+    slot: &mut Option<ResumeTarget>,
+    target: ResumeTarget,
+) -> Result<(), SparkError> {
+    if slot.is_some() {
+        return Err(SparkError::Usage(
+            "only one of --continue and --resume may be provided".to_string(),
+        ));
+    }
+    *slot = Some(target);
+    Ok(())
+}
+
+fn normalize_session_id(raw: &str) -> Result<String, SparkError> {
+    let session_id = raw.trim();
+    if session_id.is_empty() {
+        return Err(SparkError::Usage(
+            "session id for --resume cannot be empty".to_string(),
+        ));
+    }
+    Ok(session_id.to_string())
 }
 
 fn normalize_agent_name(raw: &str) -> Result<String, SparkError> {
@@ -548,6 +690,7 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
@@ -569,6 +712,7 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
         assert_eq!(cli.prompt_parts, vec!["hi", "there"]);
     }
@@ -589,8 +733,98 @@ mod tests {
             panic!("expected run command");
         };
 
+        assert!(cli.resume_target.is_none());
         assert!(cli.final_response_only);
         assert_eq!(cli.prompt_parts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_continue_short_flag() {
+        let parsed = parse_cli_args(vec!["-c".to_string(), "hello".to_string()].into_iter())
+            .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.resume_target, Some(ResumeTarget::Last));
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_continue_long_flag() {
+        let parsed =
+            parse_cli_args(vec!["--continue".to_string(), "hello".to_string()].into_iter())
+                .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.resume_target, Some(ResumeTarget::Last));
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_resume_short_flag() {
+        let parsed = parse_cli_args(
+            vec![
+                "-r".to_string(),
+                "session_123".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(
+            cli.resume_target,
+            Some(ResumeTarget::SessionId("session_123".to_string()))
+        );
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_resume_equals_form() {
+        let parsed = parse_cli_args(
+            vec!["--resume=session_123".to_string(), "hello".to_string()].into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(
+            cli.resume_target,
+            Some(ResumeTarget::SessionId("session_123".to_string()))
+        );
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_missing_resume_value() {
+        let error = parse_cli_args(vec!["--resume".to_string()].into_iter())
+            .expect_err("missing --resume value");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_conflicting_resume_flags() {
+        let error = parse_cli_args(
+            vec![
+                "--continue".to_string(),
+                "--resume".to_string(),
+                "session_123".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("conflicting resume flags");
+        assert!(matches!(error, SparkError::Usage(_)));
     }
 
     #[test]

@@ -222,11 +222,24 @@ Use `--final-response` to print only the final message content:
 cargo run --bin spark -- --final-response "Summarize this repository in one sentence."
 ```
 
+Resume the most recent session (`codex resume --last` equivalent):
+
+```bash
+cargo run --bin spark -- --continue "Follow up on the previous answer."
+```
+
+Resume a specific session id:
+
+```bash
+cargo run --bin spark -- --resume thread_123 "Continue from that session."
+```
+
 `spark` always uses:
 
 - model: `gpt-5.3-codex-spark`
 - reasoning effort: `xhigh`
 - each completed `agentMessage` is newline-terminated so consecutive messages do not run together
+- `--continue` and `--resume <session_id>` are mutually exclusive
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
 At startup, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
@@ -246,6 +259,8 @@ Files must include YAML frontmatter with a matching `name` value. `model` and `t
 </INSTRUCTIONS>
 ```
 
+See `docs/spark-session-resumption.md` for additional details.
+
 ## Integration tests
 
 These tests execute against a real local `codex app-server` process:
@@ -254,6 +269,7 @@ These tests execute against a real local `codex app-server` process:
 cargo test --test integration_stdio -- --ignored --nocapture
 cargo test --test integration_api_stdio -- --ignored --nocapture
 cargo test --features ws --test integration_ws -- --ignored --nocapture
+cargo test --test integration_spark -- --ignored --nocapture
 ```
 
 ## License

@@ -12,7 +12,7 @@ use crate::client::StdioConfig;
 use crate::client::WsConfig;
 use crate::error::ClientError;
 use crate::events::{ServerEvent, ServerNotification};
-use crate::protocol::requests;
+use crate::protocol::{requests, responses};
 use crate::schema::OpenAiSerializable;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -772,6 +772,15 @@ impl Codex {
     ) -> Result<String, ThreadRunError> {
         let mut thread = self.start_thread(thread_options);
         thread.ask(input, turn_options).await
+    }
+
+    /// Lists recorded threads after ensuring the app-server handshake is complete.
+    pub async fn thread_list(
+        &self,
+        params: requests::ThreadListParams,
+    ) -> Result<responses::ThreadListResult, ClientError> {
+        self.ensure_initialized().await?;
+        self.inner.client.thread_list(params).await
     }
 
     pub fn client(&self) -> CodexClient {
