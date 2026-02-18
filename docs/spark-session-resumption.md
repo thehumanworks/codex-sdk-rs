@@ -1,6 +1,8 @@
 # Spark Session Resumption
 
 `spark` supports resuming prior sessions so follow-up prompts can reuse thread context.
+By default, `spark` connects over websocket at `ws://127.0.0.1:4222`.
+Use `--stdio` to force app-server stdio transport.
 
 ## Flags
 
@@ -18,6 +20,12 @@ Start a fresh spark session:
 
 ```bash
 cargo run --bin spark -- "Remember that my codename is atlas."
+```
+
+Start a fresh session over stdio:
+
+```bash
+cargo run --bin spark -- --stdio "Remember that my codename is atlas."
 ```
 
 Continue the latest spark session:

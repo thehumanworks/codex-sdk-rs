@@ -10,24 +10,30 @@ use codex_app_server_sdk::api::{
     TurnOptions,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
+#[cfg(feature = "ws")]
+use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
 const APP_NAME: &str = "spark";
 const MODEL: &str = "gpt-5.3-codex-spark";
+#[cfg(feature = "ws")]
+const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 
 const USAGE: &str = "\
-Usage: spark [--agent NAME] [--final-response] [-c | -r SESSION_ID] [PROMPT...]
+Usage: spark [--agent NAME] [--final-response] [--stdio] [-c | -r SESSION_ID] [PROMPT...]
 
 Runs one turn with:
   model: gpt-5.3-codex-spark
   reasoning effort: xhigh
+  transport: websocket (default, ws://127.0.0.1:4222)
 
 Options:
   --agent NAME    Load ~/.codex/agents/NAME.md
+  --stdio        Use app-server stdio transport instead of websocket default
   -c, --continue
                  Resume the most recent recorded session (codex resume --last equivalent)
   -r, --resume ID
@@ -45,11 +51,18 @@ enum ResumeTarget {
     SessionId(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransportMode {
+    WebSocket,
+    Stdio,
+}
+
 #[derive(Debug)]
 struct CliArgs {
     agent: Option<String>,
     resume_target: Option<ResumeTarget>,
     final_response_only: bool,
+    transport_mode: TransportMode,
     prompt_parts: Vec<String>,
 }
 
@@ -130,6 +143,7 @@ async fn run() -> Result<(), SparkError> {
         agent,
         resume_target,
         final_response_only,
+        transport_mode,
         prompt_parts,
     } = cli;
 
@@ -143,11 +157,10 @@ async fn run() -> Result<(), SparkError> {
         thread_options = thread_options.developer_instructions(agent.instructions);
     }
 
-    let codex_binary = resolve_codex_binary()?;
-    let mut stdio_config = StdioConfig::default();
-    stdio_config.codex_binary = codex_binary;
-
-    let codex = Codex::spawn_stdio(stdio_config).await?;
+    let codex = match transport_mode {
+        TransportMode::WebSocket => connect_default_ws_codex().await?,
+        TransportMode::Stdio => spawn_stdio_codex().await?,
+    };
     let options = thread_options.build();
     let mut thread = match resume_target {
         Some(ResumeTarget::Last) => {
@@ -245,6 +258,32 @@ async fn run() -> Result<(), SparkError> {
     }
 
     Ok(())
+}
+
+#[cfg(feature = "ws")]
+async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
+    let client = CodexClient::connect_ws(WsConfig {
+        url: DEFAULT_WS_URL.to_string(),
+        env: Default::default(),
+        options: ClientOptions::default(),
+    })
+    .await?;
+    Ok(client.as_api())
+}
+
+#[cfg(not(feature = "ws"))]
+async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
+    Err(SparkError::Config(
+        "spark was built without websocket support; rerun with --stdio or rebuild with the `ws` feature"
+            .to_string(),
+    ))
+}
+
+async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
+    let codex_binary = resolve_codex_binary()?;
+    let mut stdio_config = StdioConfig::default();
+    stdio_config.codex_binary = codex_binary;
+    Ok(Codex::spawn_stdio(stdio_config).await?)
 }
 
 async fn resolve_last_session_id(codex: &Codex) -> Result<String, SparkError> {
@@ -385,6 +424,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     let mut agent: Option<String> = None;
     let mut resume_target: Option<ResumeTarget> = None;
     let mut final_response_only = false;
+    let mut transport_mode = TransportMode::WebSocket;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
     let mut iter = args.into_iter();
@@ -449,6 +489,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 final_response_only = true;
                 continue;
             }
+            if arg == "--stdio" {
+                if transport_mode == TransportMode::Stdio {
+                    return Err(SparkError::Usage(
+                        "--stdio may only be provided once".to_string(),
+                    ));
+                }
+                transport_mode = TransportMode::Stdio;
+                continue;
+            }
             if arg.starts_with('-') {
                 return Err(SparkError::Usage(format!("unknown option: {arg}")));
             }
@@ -461,6 +510,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         agent,
         resume_target,
         final_response_only,
+        transport_mode,
         prompt_parts,
     }))
 }
@@ -692,6 +742,7 @@ mod tests {
         assert_eq!(cli.agent.as_deref(), Some("writer"));
         assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -714,6 +765,7 @@ mod tests {
         assert_eq!(cli.agent.as_deref(), Some("writer"));
         assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hi", "there"]);
     }
 
@@ -735,6 +787,7 @@ mod tests {
 
         assert!(cli.resume_target.is_none());
         assert!(cli.final_response_only);
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello", "world"]);
     }
 
@@ -748,6 +801,7 @@ mod tests {
         };
 
         assert_eq!(cli.resume_target, Some(ResumeTarget::Last));
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -762,6 +816,7 @@ mod tests {
         };
 
         assert_eq!(cli.resume_target, Some(ResumeTarget::Last));
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -785,6 +840,7 @@ mod tests {
             cli.resume_target,
             Some(ResumeTarget::SessionId("session_123".to_string()))
         );
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -803,7 +859,28 @@ mod tests {
             cli.resume_target,
             Some(ResumeTarget::SessionId("session_123".to_string()))
         );
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_stdio_flag() {
+        let parsed = parse_cli_args(
+            vec![
+                "--stdio".to_string(),
+                "hello".to_string(),
+                "world".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.transport_mode, TransportMode::Stdio);
+        assert_eq!(cli.prompt_parts, vec!["hello", "world"]);
     }
 
     #[test]
@@ -837,6 +914,13 @@ mod tests {
             .into_iter(),
         )
         .expect_err("duplicate final-response");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_duplicate_stdio_flag() {
+        let error = parse_cli_args(vec!["--stdio".to_string(), "--stdio".to_string()].into_iter())
+            .expect_err("duplicate stdio");
         assert!(matches!(error, SparkError::Usage(_)));
     }
 

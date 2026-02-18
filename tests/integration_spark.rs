@@ -106,6 +106,7 @@ async fn spark_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error
 
     let args = vec![
         "--final-response".to_string(),
+        "--stdio".to_string(),
         "--resume".to_string(),
         thread_id,
         "Return only the sentinel token from earlier in this same session.".to_string(),
@@ -125,6 +126,7 @@ async fn spark_continue_flag_resumes_most_recent_session() -> Result<(), Box<dyn
 
     let args = vec![
         "--final-response".to_string(),
+        "--stdio".to_string(),
         "--continue".to_string(),
         "Return only the sentinel token from earlier in this same session.".to_string(),
     ];

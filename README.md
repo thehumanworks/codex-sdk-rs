@@ -210,10 +210,17 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## `spark` CLI
 
-The repository includes a `spark` binary for one-shot runs (streamed by default):
+The repository includes a `spark` binary for one-shot runs (streamed by default).
+By default it connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
 
 ```bash
 cargo run --bin spark -- "Summarize this repository in one sentence."
+```
+
+Use `--stdio` to force app-server stdio transport instead:
+
+```bash
+cargo run --bin spark -- --stdio "Summarize this repository in one sentence."
 ```
 
 Use `--final-response` to print only the final message content:
@@ -238,11 +245,12 @@ cargo run --bin spark -- --resume thread_123 "Continue from that session."
 
 - model: `gpt-5.3-codex-spark`
 - reasoning effort: `xhigh`
+- websocket transport by default (`ws://127.0.0.1:4222`), unless `--stdio` is provided
 - each completed `agentMessage` is newline-terminated so consecutive messages do not run together
 - `--continue` and `--resume <session_id>` are mutually exclusive
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
-At startup, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
+When `--stdio` is used, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
 If startup fails with a codex lookup error, run `which codex` and ensure your shell PATH includes the desired Codex CLI install.
 Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored.
 `description` (or `name` fallback), `skills`, and Markdown body are rendered into `developer_instructions` as:
