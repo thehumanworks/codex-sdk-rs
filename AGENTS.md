@@ -21,7 +21,8 @@
 - `cargo test --features ws --test integration_ws -- --ignored --nocapture`: real websocket transport tests.
 - `cargo run --example raw_fallback`: raw RPC smoke test.
 - `cargo run --example turn_start_stream`: live turn streaming test.
-- `cargo run --bin spark -- "..."`: one-shot streamed run with fixed `gpt-5.3-codex-spark` + `xhigh`.
+- `cargo run --bin spark -- "..."`: one-shot run (streamed by default) with fixed `gpt-5.3-codex-spark` + `xhigh`.
+- `cargo run --bin spark -- --final-response "..."`: one-shot run that only prints final response content.
 
 ## CI Merge Gate (Source of Truth)
 - Required for merge:
@@ -110,10 +111,11 @@
 - Compatibility policy is enforced in `src/compat.rs`; update tests/docs when adjusting version ranges.
 - With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
+- High-level API includes final-response shortcuts: `Thread::ask(...)`, `Codex::ask(...)`, and `Codex::ask_with_options(...)`, which return only the final agent message text.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
 - Use `TurnOptions::builder()` for per-turn output schema control; `output_schema` maps directly to app-server `turn/start.output_schema` and accepts either raw `serde_json::Value` or typed schemas via `output_schema_for::<T>()`.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
-- The `spark` binary is single-shot only (no thread continuation), streams `agentMessage` deltas to stdout, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
+- The `spark` binary is single-shot only (no thread continuation), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
 - `spark --agent <name>` resolves `~/.codex/agents/<name>.md`, requires YAML frontmatter with matching `name`, ignores `model`/`tools`, and builds `developer_instructions` as `<ROLE>{description|name}</ROLE>` plus `<INSTRUCTIONS>` containing frontmatter `skills` and Markdown body content.
 - On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run --bin spark -- ...` or `./target/release/spark ...` to run the repository binary.
 

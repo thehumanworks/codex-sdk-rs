@@ -74,6 +74,25 @@ Use `run_streamed(...)` when you need incremental item and lifecycle events.
 
 `TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`.
 
+Use `ask(...)` or `ask_with_options(...)` when you only need the final response string:
+
+```rust
+# use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
+# use codex_app_server_sdk::StdioConfig;
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let final_response = codex
+    .ask_with_options(
+        "Summarize this repository in one sentence.",
+        ThreadOptions::default(),
+        TurnOptions::default(),
+    )
+    .await?;
+println!("response: {final_response}");
+# Ok(())
+# }
+```
+
 ## Typed output schema
 
 ```rust
@@ -191,16 +210,23 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## `spark` CLI
 
-The repository includes a `spark` binary for one-shot streamed runs:
+The repository includes a `spark` binary for one-shot runs (streamed by default):
 
 ```bash
 cargo run --bin spark -- "Summarize this repository in one sentence."
+```
+
+Use `--final-response` to print only the final message content:
+
+```bash
+cargo run --bin spark -- --final-response "Summarize this repository in one sentence."
 ```
 
 `spark` always uses:
 
 - model: `gpt-5.3-codex-spark`
 - reasoning effort: `xhigh`
+- each completed `agentMessage` is newline-terminated so consecutive messages do not run together
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
 At startup, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.

@@ -757,6 +757,23 @@ impl Codex {
         }
     }
 
+    /// Runs a one-shot turn on a new thread and returns only the final agent response text.
+    pub async fn ask(&self, input: impl Into<Input>) -> Result<String, ThreadRunError> {
+        self.ask_with_options(input, ThreadOptions::default(), TurnOptions::default())
+            .await
+    }
+
+    /// Runs a one-shot turn on a new thread and returns only the final agent response text.
+    pub async fn ask_with_options(
+        &self,
+        input: impl Into<Input>,
+        thread_options: ThreadOptions,
+        turn_options: TurnOptions,
+    ) -> Result<String, ThreadRunError> {
+        let mut thread = self.start_thread(thread_options);
+        thread.ask(input, turn_options).await
+    }
+
     pub fn client(&self) -> CodexClient {
         self.inner.client.clone()
     }
@@ -920,6 +937,16 @@ impl Thread {
             final_response,
             usage,
         })
+    }
+
+    /// Runs one turn on this thread and returns only the final agent response text.
+    pub async fn ask(
+        &mut self,
+        input: impl Into<Input>,
+        turn_options: TurnOptions,
+    ) -> Result<String, ThreadRunError> {
+        let turn = self.run(input, turn_options).await?;
+        Ok(turn.final_response)
     }
 }
 

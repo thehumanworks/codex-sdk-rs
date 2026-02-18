@@ -6,7 +6,8 @@ use std::process::Command;
 use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
-    Codex, ModelReasoningEffort, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
+    Codex, ModelReasoningEffort, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError,
+    TurnOptions,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig};
 use serde::Deserialize;
@@ -16,14 +17,16 @@ const APP_NAME: &str = "spark";
 const MODEL: &str = "gpt-5.3-codex-spark";
 
 const USAGE: &str = "\
-Usage: spark [--agent NAME] [PROMPT...]
+Usage: spark [--agent NAME] [--final-response] [PROMPT...]
 
-Runs one streamed turn with:
+Runs one turn with:
   model: gpt-5.3-codex-spark
   reasoning effort: xhigh
 
 Options:
   --agent NAME    Load ~/.codex/agents/NAME.md
+  --final-response
+                 Output only the final message text (no streamed deltas)
   -h, --help      Show this help
 
 If PROMPT is omitted, spark reads the prompt from stdin.
@@ -32,6 +35,7 @@ If PROMPT is omitted, spark reads the prompt from stdin.
 #[derive(Debug)]
 struct CliArgs {
     agent: Option<String>,
+    final_response_only: bool,
     prompt_parts: Vec<String>,
 }
 
@@ -72,6 +76,8 @@ enum SparkError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Client(#[from] ClientError),
+    #[error(transparent)]
+    ThreadRun(#[from] ThreadRunError),
     #[error("failed to parse YAML frontmatter in {}: {source}", .path.display())]
     Frontmatter {
         path: PathBuf,
@@ -122,11 +128,29 @@ async fn run() -> Result<(), SparkError> {
 
     let codex = Codex::spawn_stdio(stdio_config).await?;
     let mut thread = codex.start_thread(thread_options.build());
+
+    if cli.final_response_only {
+        let final_response = thread.ask(prompt, TurnOptions::default()).await?;
+        let mut stdout = io::stdout();
+        let mut ended_with_newline = false;
+
+        if !final_response.is_empty() {
+            print_chunk(&mut stdout, &final_response)?;
+            ended_with_newline = final_response.ends_with('\n');
+        }
+        ensure_message_separator(
+            &mut stdout,
+            !final_response.is_empty(),
+            &mut ended_with_newline,
+        )?;
+        return Ok(());
+    }
+
     let mut streamed = thread.run_streamed(prompt, TurnOptions::default()).await?;
 
     let mut stdout = io::stdout();
     let mut saw_terminal = false;
-    let mut saw_delta = false;
+    let mut saw_delta_for_message = false;
     let mut printed_any = false;
     let mut ended_with_newline = false;
 
@@ -137,7 +161,7 @@ async fn run() -> Result<(), SparkError> {
                 if let ThreadItem::AgentMessage(agent_message) = item {
                     if !agent_message.text.is_empty() {
                         print_chunk(&mut stdout, &agent_message.text)?;
-                        saw_delta = true;
+                        saw_delta_for_message = true;
                         printed_any = true;
                         ended_with_newline = agent_message.text.ends_with('\n');
                     }
@@ -145,11 +169,21 @@ async fn run() -> Result<(), SparkError> {
             }
             ThreadEvent::ItemCompleted { item } => {
                 if let ThreadItem::AgentMessage(agent_message) = item {
-                    if !saw_delta && !agent_message.text.is_empty() {
+                    let mut message_had_output = saw_delta_for_message;
+                    if !saw_delta_for_message && !agent_message.text.is_empty() {
                         print_chunk(&mut stdout, &agent_message.text)?;
                         printed_any = true;
                         ended_with_newline = agent_message.text.ends_with('\n');
+                        message_had_output = true;
                     }
+                    if message_had_output {
+                        ensure_message_separator(
+                            &mut stdout,
+                            printed_any,
+                            &mut ended_with_newline,
+                        )?;
+                    }
+                    saw_delta_for_message = false;
                 }
             }
             ThreadEvent::TurnCompleted { .. } => {
@@ -177,9 +211,8 @@ async fn run() -> Result<(), SparkError> {
         ));
     }
 
-    if printed_any && !ended_with_newline {
-        writeln!(stdout)?;
-        stdout.flush()?;
+    if printed_any {
+        ensure_message_separator(&mut stdout, printed_any, &mut ended_with_newline)?;
     }
 
     Ok(())
@@ -233,14 +266,28 @@ where
     Ok(resolved.to_string())
 }
 
-fn print_chunk(stdout: &mut io::Stdout, chunk: &str) -> Result<(), SparkError> {
-    write!(stdout, "{chunk}")?;
-    stdout.flush()?;
+fn print_chunk<W: Write>(writer: &mut W, chunk: &str) -> Result<(), SparkError> {
+    write!(writer, "{chunk}")?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn ensure_message_separator<W: Write>(
+    writer: &mut W,
+    printed_any: bool,
+    ended_with_newline: &mut bool,
+) -> Result<(), SparkError> {
+    if printed_any && !*ended_with_newline {
+        writeln!(writer)?;
+        writer.flush()?;
+        *ended_with_newline = true;
+    }
     Ok(())
 }
 
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
     let mut agent: Option<String> = None;
+    let mut final_response_only = false;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
     let mut iter = args.into_iter();
@@ -275,6 +322,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 agent = Some(normalize_agent_name(raw)?);
                 continue;
             }
+            if arg == "--final-response" {
+                if final_response_only {
+                    return Err(SparkError::Usage(
+                        "--final-response may only be provided once".to_string(),
+                    ));
+                }
+                final_response_only = true;
+                continue;
+            }
             if arg.starts_with('-') {
                 return Err(SparkError::Usage(format!("unknown option: {arg}")));
             }
@@ -285,6 +341,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
 
     Ok(ParsedCommand::Run(CliArgs {
         agent,
+        final_response_only,
         prompt_parts,
     }))
 }
@@ -491,6 +548,7 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(!cli.final_response_only);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -511,7 +569,41 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(!cli.final_response_only);
         assert_eq!(cli.prompt_parts, vec!["hi", "there"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_final_response_flag() {
+        let parsed = parse_cli_args(
+            vec![
+                "--final-response".to_string(),
+                "hello".to_string(),
+                "world".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.final_response_only);
+        assert_eq!(cli.prompt_parts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_duplicate_final_response_flag() {
+        let error = parse_cli_args(
+            vec![
+                "--final-response".to_string(),
+                "--final-response".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("duplicate final-response");
+        assert!(matches!(error, SparkError::Usage(_)));
     }
 
     #[test]
@@ -690,6 +782,30 @@ Do the task.
         .expect_err("expected failure");
 
         assert!(matches!(error, SparkError::Config(_)));
+    }
+
+    #[test]
+    fn ensure_message_separator_adds_newline_when_missing() {
+        let mut output = b"hello".to_vec();
+        let mut ended_with_newline = false;
+
+        ensure_message_separator(&mut output, true, &mut ended_with_newline)
+            .expect("separator write");
+
+        assert_eq!(output, b"hello\n");
+        assert!(ended_with_newline);
+    }
+
+    #[test]
+    fn ensure_message_separator_skips_when_output_already_newline_terminated() {
+        let mut output = b"hello\n".to_vec();
+        let mut ended_with_newline = true;
+
+        ensure_message_separator(&mut output, true, &mut ended_with_newline)
+            .expect("separator write");
+
+        assert_eq!(output, b"hello\n");
+        assert!(ended_with_newline);
     }
 
     fn make_temp_dir() -> PathBuf {

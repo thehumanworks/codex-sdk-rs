@@ -72,6 +72,47 @@ async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::erro
 
 #[tokio::test]
 #[ignore = "requires local codex app-server runtime"]
+async fn ask_returns_final_response_only() -> Result<(), Box<dyn std::error::Error>> {
+    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+    let mut thread = codex.start_thread(ThreadOptions::default());
+
+    let final_response = thread
+        .ask("Reply with exactly: ok", TurnOptions::default())
+        .await?;
+
+    assert!(thread.id().is_some(), "thread id should be populated");
+    assert!(
+        !final_response.trim().is_empty(),
+        "final response should not be empty"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local codex app-server runtime"]
+async fn codex_ask_with_options_returns_final_response_only()
+-> Result<(), Box<dyn std::error::Error>> {
+    let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+
+    let final_response = codex
+        .ask_with_options(
+            "Reply with exactly: ok",
+            ThreadOptions::default(),
+            TurnOptions::default(),
+        )
+        .await?;
+
+    assert!(
+        !final_response.trim().is_empty(),
+        "final response should not be empty"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires local codex app-server runtime"]
 async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
