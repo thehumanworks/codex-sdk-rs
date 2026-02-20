@@ -26,7 +26,12 @@ fn spark_binary() -> PathBuf {
     std::env::var_os("CARGO_BIN_EXE_spark")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let workspace_root = manifest_dir
+                .parent()
+                .and_then(|dir| dir.parent())
+                .unwrap_or(manifest_dir.as_path());
+            workspace_root
                 .join("target")
                 .join("debug")
                 .join(format!("spark{}", std::env::consts::EXE_SUFFIX))

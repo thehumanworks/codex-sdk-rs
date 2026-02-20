@@ -200,13 +200,13 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## Examples
 
-- `examples/turn_start_stream.rs`
-- `examples/auth_api_key.rs`
-- `examples/raw_fallback.rs`
-- `examples/ws_persistent.rs`
-- `examples/high_level_run.rs`
-- `examples/high_level_streamed.rs`
-- `examples/high_level_output_schema.rs`
+- `crates/sdk/examples/turn_start_stream.rs`
+- `crates/sdk/examples/auth_api_key.rs`
+- `crates/sdk/examples/raw_fallback.rs`
+- `crates/sdk/examples/ws_persistent.rs`
+- `crates/sdk/examples/high_level_run.rs`
+- `crates/sdk/examples/high_level_streamed.rs`
+- `crates/sdk/examples/high_level_output_schema.rs`
 
 ## `spark` CLI
 
@@ -214,31 +214,31 @@ The repository includes a `spark` binary for one-shot runs (streamed by default)
 By default it connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
 
 ```bash
-cargo run --bin spark -- "Summarize this repository in one sentence."
+cargo run -p spark -- "Summarize this repository in one sentence."
 ```
 
 Use `--stdio` to force app-server stdio transport instead:
 
 ```bash
-cargo run --bin spark -- --stdio "Summarize this repository in one sentence."
+cargo run -p spark -- --stdio "Summarize this repository in one sentence."
 ```
 
 Use `--final-response` to print only the final message content:
 
 ```bash
-cargo run --bin spark -- --final-response "Summarize this repository in one sentence."
+cargo run -p spark -- --final-response "Summarize this repository in one sentence."
 ```
 
 Resume the most recent session (`codex resume --last` equivalent):
 
 ```bash
-cargo run --bin spark -- --continue "Follow up on the previous answer."
+cargo run -p spark -- --continue "Follow up on the previous answer."
 ```
 
 Resume a specific session id:
 
 ```bash
-cargo run --bin spark -- --resume thread_123 "Continue from that session."
+cargo run -p spark -- --resume thread_123 "Continue from that session."
 ```
 
 `spark` always uses:
@@ -274,10 +274,10 @@ See `docs/spark-session-resumption.md` for additional details.
 These tests execute against a real local `codex app-server` process:
 
 ```bash
-cargo test --test integration_stdio -- --ignored --nocapture
-cargo test --test integration_api_stdio -- --ignored --nocapture
-cargo test --features ws --test integration_ws -- --ignored --nocapture
-cargo test --test integration_spark -- --ignored --nocapture
+cargo test -p codex-app-server-sdk --test integration_stdio -- --ignored --nocapture
+cargo test -p codex-app-server-sdk --test integration_api_stdio -- --ignored --nocapture
+cargo test -p codex-app-server-sdk --features ws --test integration_ws -- --ignored --nocapture
+cargo test -p spark --test integration_spark -- --ignored --nocapture
 ```
 
 ## License

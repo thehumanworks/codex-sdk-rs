@@ -26,18 +26,29 @@ fn isolated_codex_home() -> PathBuf {
     path
 }
 
+fn isolate_home_enabled() -> bool {
+    std::env::var("CODEX_SDK_TEST_ISOLATE_HOME")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes"
+        })
+        .unwrap_or(false)
+}
+
 fn isolated_stdio_config() -> StdioConfig {
     let mut config = StdioConfig::default();
     let mut env = HashMap::new();
-    let isolated_home = isolated_codex_home();
-    env.insert(
-        "HOME".to_string(),
-        isolated_home.to_string_lossy().to_string(),
-    );
-    env.insert(
-        "CODEX_HOME".to_string(),
-        isolated_home.to_string_lossy().to_string(),
-    );
+    if isolate_home_enabled() {
+        let isolated_home = isolated_codex_home();
+        env.insert(
+            "HOME".to_string(),
+            isolated_home.to_string_lossy().to_string(),
+        );
+        env.insert(
+            "CODEX_HOME".to_string(),
+            isolated_home.to_string_lossy().to_string(),
+        );
+    }
     if let Ok(api_key) = std::env::var("OPENAI_API_KEY") {
         env.insert("OPENAI_API_KEY".to_string(), api_key);
     }

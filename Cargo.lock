@@ -610,6 +610,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spark"
+version = "0.1.0"
+dependencies = [
+ "codex-app-server-sdk",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

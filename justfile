@@ -4,4 +4,4 @@ default:
     @just --list
 
 install-spark:
-    cargo install --path . --bin spark --force --root "$HOME/.local"
+    cargo install --path crates/spark --bin spark --force --root "$HOME/.local"
