@@ -1,1 +1,67 @@
 /target
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+*.dll
+*.dylib
+*.egg
+*.egg-info/
+*.dist-info/
+.Python
+dist/
+build/
+site/
+.eggs/
+pip-wheel-metadata/
+__pypackages__/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Packaging / lockfiles
+poetry.lock
+Pipfile.lock
+uv.lock
+pyproject.toml.lock
+
+# Tooling caches
+.mypy_cache/
+.pyre/
+.pytype/
+.pyenv/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit.xml
+
+# Logs and temp files
+*.log
+*.log.*
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE / editor
+.idea/
+.vscode/
+
+# OS / misc
+.DS_Store
+Thumbs.db
