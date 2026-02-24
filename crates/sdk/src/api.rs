@@ -8,10 +8,10 @@ use tokio::task::JoinHandle;
 
 use crate::CodexClient;
 use crate::client::StdioConfig;
-#[cfg(feature = "ws")]
 use crate::client::WsConfig;
 use crate::error::ClientError;
 use crate::events::{ServerEvent, ServerNotification};
+use crate::protocol::shared::EmptyObject;
 use crate::protocol::{requests, responses};
 use crate::schema::OpenAiSerializable;
 
@@ -423,6 +423,21 @@ impl ThreadOptionsBuilder {
 #[derive(Debug, Clone, Default)]
 pub struct TurnOptions {
     pub output_schema: Option<Value>,
+    pub working_directory: Option<String>,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub model_reasoning_effort: Option<ModelReasoningEffort>,
+    pub model_reasoning_summary: Option<ModelReasoningSummary>,
+    pub personality: Option<Personality>,
+    pub approval_policy: Option<ApprovalMode>,
+    pub sandbox_policy: Option<Value>,
+    pub collaboration_mode: Option<CollaborationMode>,
+    pub skip_git_repo_check: Option<bool>,
+    pub web_search_mode: Option<WebSearchMode>,
+    pub web_search_enabled: Option<bool>,
+    pub network_access_enabled: Option<bool>,
+    pub additional_directories: Option<Vec<String>>,
+    pub extra: Option<Map<String, Value>>,
 }
 
 impl TurnOptions {
@@ -437,6 +452,16 @@ impl TurnOptions {
 
     pub fn with_output_schema_for<T: OpenAiSerializable>(mut self) -> Self {
         self.output_schema = Some(T::openai_output_schema());
+        self
+    }
+
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Self {
+        self.working_directory = Some(working_directory.into());
         self
     }
 }
@@ -467,6 +492,100 @@ impl TurnOptionsBuilder {
 
     pub fn clear_output_schema(mut self) -> Self {
         self.options.output_schema = None;
+        self
+    }
+
+    pub fn working_directory(mut self, working_directory: impl Into<String>) -> Self {
+        self.options.working_directory = Some(working_directory.into());
+        self
+    }
+
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.options.model = Some(model.into());
+        self
+    }
+
+    pub fn model_provider(mut self, model_provider: impl Into<String>) -> Self {
+        self.options.model_provider = Some(model_provider.into());
+        self
+    }
+
+    pub fn model_reasoning_effort(mut self, model_reasoning_effort: ModelReasoningEffort) -> Self {
+        self.options.model_reasoning_effort = Some(model_reasoning_effort);
+        self
+    }
+
+    pub fn model_reasoning_summary(
+        mut self,
+        model_reasoning_summary: ModelReasoningSummary,
+    ) -> Self {
+        self.options.model_reasoning_summary = Some(model_reasoning_summary);
+        self
+    }
+
+    pub fn personality(mut self, personality: Personality) -> Self {
+        self.options.personality = Some(personality);
+        self
+    }
+
+    pub fn approval_policy(mut self, approval_policy: ApprovalMode) -> Self {
+        self.options.approval_policy = Some(approval_policy);
+        self
+    }
+
+    pub fn sandbox_policy(mut self, sandbox_policy: Value) -> Self {
+        self.options.sandbox_policy = Some(sandbox_policy);
+        self
+    }
+
+    pub fn collaboration_mode(mut self, collaboration_mode: CollaborationMode) -> Self {
+        self.options.collaboration_mode = Some(collaboration_mode);
+        self
+    }
+
+    pub fn skip_git_repo_check(mut self, enabled: bool) -> Self {
+        self.options.skip_git_repo_check = Some(enabled);
+        self
+    }
+
+    pub fn web_search_mode(mut self, web_search_mode: WebSearchMode) -> Self {
+        self.options.web_search_mode = Some(web_search_mode);
+        self
+    }
+
+    pub fn web_search_enabled(mut self, enabled: bool) -> Self {
+        self.options.web_search_enabled = Some(enabled);
+        self
+    }
+
+    pub fn network_access_enabled(mut self, enabled: bool) -> Self {
+        self.options.network_access_enabled = Some(enabled);
+        self
+    }
+
+    pub fn additional_directories(mut self, additional_directories: Vec<String>) -> Self {
+        self.options.additional_directories = Some(additional_directories);
+        self
+    }
+
+    pub fn add_directory(mut self, directory: impl Into<String>) -> Self {
+        self.options
+            .additional_directories
+            .get_or_insert_with(Vec::new)
+            .push(directory.into());
+        self
+    }
+
+    pub fn extra(mut self, extra: Map<String, Value>) -> Self {
+        self.options.extra = Some(extra);
+        self
+    }
+
+    pub fn insert_extra(mut self, key: impl Into<String>, value: Value) -> Self {
+        self.options
+            .extra
+            .get_or_insert_with(Map::new)
+            .insert(key.into(), value);
         self
     }
 }
@@ -692,6 +811,24 @@ pub enum ThreadItem {
     Unknown(UnknownItem),
 }
 
+macro_rules! codex_forward_typed_method {
+    ($method:ident, $params_ty:ty, $result_ty:ty) => {
+        pub async fn $method(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
+            self.ensure_initialized().await?;
+            self.inner.client.$method(params).await
+        }
+    };
+}
+
+macro_rules! codex_forward_null_method {
+    ($method:ident, $result_ty:ty) => {
+        pub async fn $method(&self) -> Result<$result_ty, ClientError> {
+            self.ensure_initialized().await?;
+            self.inner.client.$method().await
+        }
+    };
+}
+
 #[derive(Clone)]
 pub struct Codex {
     inner: Arc<CodexInner>,
@@ -733,7 +870,6 @@ impl Codex {
         Ok(Self::from_client(client))
     }
 
-    #[cfg(feature = "ws")]
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         let client = CodexClient::connect_ws(config).await?;
         Ok(Self::from_client(client))
@@ -744,6 +880,7 @@ impl Codex {
             codex: self.clone(),
             id: None,
             needs_resume: false,
+            last_turn_id: None,
             options,
         }
     }
@@ -753,6 +890,7 @@ impl Codex {
             codex: self.clone(),
             id: Some(id.into()),
             needs_resume: true,
+            last_turn_id: None,
             options,
         }
     }
@@ -781,6 +919,190 @@ impl Codex {
     ) -> Result<responses::ThreadListResult, ClientError> {
         self.ensure_initialized().await?;
         self.inner.client.thread_list(params).await
+    }
+
+    codex_forward_typed_method!(
+        thread_start,
+        requests::ThreadStartParams,
+        responses::ThreadResult
+    );
+    codex_forward_typed_method!(
+        thread_resume,
+        requests::ThreadResumeParams,
+        responses::ThreadResult
+    );
+    codex_forward_typed_method!(
+        thread_fork,
+        requests::ThreadForkParams,
+        responses::ThreadResult
+    );
+    codex_forward_typed_method!(
+        thread_archive,
+        requests::ThreadArchiveParams,
+        responses::ThreadArchiveResult
+    );
+    codex_forward_typed_method!(
+        thread_name_set,
+        requests::ThreadSetNameParams,
+        responses::ThreadSetNameResult
+    );
+    codex_forward_typed_method!(
+        thread_unarchive,
+        requests::ThreadUnarchiveParams,
+        responses::ThreadUnarchiveResult
+    );
+    codex_forward_typed_method!(
+        thread_compact_start,
+        requests::ThreadCompactStartParams,
+        responses::ThreadCompactStartResult
+    );
+    codex_forward_typed_method!(
+        thread_rollback,
+        requests::ThreadRollbackParams,
+        responses::ThreadRollbackResult
+    );
+    codex_forward_typed_method!(
+        thread_loaded_list,
+        requests::ThreadLoadedListParams,
+        responses::ThreadLoadedListResult
+    );
+    codex_forward_typed_method!(
+        thread_read,
+        requests::ThreadReadParams,
+        responses::ThreadReadResult
+    );
+    codex_forward_typed_method!(
+        skills_list,
+        requests::SkillsListParams,
+        responses::SkillsListResult
+    );
+    codex_forward_typed_method!(
+        skills_remote_read,
+        requests::SkillsRemoteReadParams,
+        responses::SkillsRemoteReadResult
+    );
+    codex_forward_typed_method!(
+        skills_remote_write,
+        requests::SkillsRemoteWriteParams,
+        responses::SkillsRemoteWriteResult
+    );
+    codex_forward_typed_method!(
+        app_list,
+        requests::AppsListParams,
+        responses::AppsListResult
+    );
+    codex_forward_typed_method!(
+        skills_config_write,
+        requests::SkillsConfigWriteParams,
+        responses::SkillsConfigWriteResult
+    );
+    codex_forward_typed_method!(turn_start, requests::TurnStartParams, responses::TurnResult);
+    codex_forward_typed_method!(
+        turn_steer,
+        requests::TurnSteerParams,
+        responses::TurnSteerResult
+    );
+    codex_forward_typed_method!(turn_interrupt, requests::TurnInterruptParams, EmptyObject);
+    codex_forward_typed_method!(
+        review_start,
+        requests::ReviewStartParams,
+        responses::ReviewStartResult
+    );
+    codex_forward_typed_method!(
+        model_list,
+        requests::ModelListParams,
+        responses::ModelListResult
+    );
+    codex_forward_typed_method!(
+        experimental_feature_list,
+        requests::ExperimentalFeatureListParams,
+        responses::ExperimentalFeatureListResult
+    );
+    codex_forward_typed_method!(
+        mcp_server_oauth_login,
+        requests::McpServerOauthLoginParams,
+        responses::McpServerOauthLoginResult
+    );
+    codex_forward_typed_method!(
+        mcp_server_status_list,
+        requests::ListMcpServerStatusParams,
+        responses::McpServerStatusListResult
+    );
+    codex_forward_typed_method!(
+        account_login_start,
+        requests::LoginAccountParams,
+        responses::LoginAccountResult
+    );
+    codex_forward_typed_method!(
+        account_login_cancel,
+        requests::CancelLoginAccountParams,
+        EmptyObject
+    );
+    codex_forward_typed_method!(
+        feedback_upload,
+        requests::FeedbackUploadParams,
+        responses::FeedbackUploadResult
+    );
+    codex_forward_typed_method!(
+        command_exec,
+        requests::CommandExecParams,
+        responses::CommandExecResult
+    );
+    codex_forward_typed_method!(
+        config_read,
+        requests::ConfigReadParams,
+        responses::ConfigReadResult
+    );
+    codex_forward_typed_method!(
+        config_value_write,
+        requests::ConfigValueWriteParams,
+        responses::ConfigValueWriteResult
+    );
+    codex_forward_typed_method!(
+        config_batch_write,
+        requests::ConfigBatchWriteParams,
+        responses::ConfigBatchWriteResult
+    );
+    codex_forward_typed_method!(
+        account_read,
+        requests::GetAccountParams,
+        responses::GetAccountResult
+    );
+
+    codex_forward_null_method!(config_mcp_server_reload, EmptyObject);
+    codex_forward_null_method!(account_logout, EmptyObject);
+    codex_forward_null_method!(
+        account_rate_limits_read,
+        responses::AccountRateLimitsReadResult
+    );
+    codex_forward_null_method!(
+        config_requirements_read,
+        responses::ConfigRequirementsReadResult
+    );
+
+    pub async fn send_raw_request(
+        &self,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, ClientError> {
+        self.ensure_initialized().await?;
+        self.inner
+            .client
+            .send_raw_request(method, params, timeout)
+            .await
+    }
+
+    pub async fn send_raw_notification(
+        &self,
+        method: impl Into<String>,
+        params: Value,
+    ) -> Result<(), ClientError> {
+        self.ensure_initialized().await?;
+        self.inner
+            .client
+            .send_raw_notification(method, params)
+            .await
     }
 
     pub fn client(&self) -> CodexClient {
@@ -817,6 +1139,7 @@ pub struct Thread {
     codex: Codex,
     id: Option<String>,
     needs_resume: bool,
+    last_turn_id: Option<String>,
     options: ThreadOptions,
 }
 
@@ -825,11 +1148,9 @@ impl Thread {
         self.id.as_deref()
     }
 
-    pub async fn run_streamed(
+    async fn ensure_thread_started_or_resumed(
         &mut self,
-        input: impl Into<Input>,
-        turn_options: TurnOptions,
-    ) -> Result<StreamedTurn, ClientError> {
+    ) -> Result<(String, Option<String>), ClientError> {
         self.codex.ensure_initialized().await?;
 
         let mut emit_thread_started = None;
@@ -843,6 +1164,7 @@ impl Thread {
             self.id = Some(thread.thread.id.clone());
             emit_thread_started = Some(thread.thread.id);
             self.needs_resume = false;
+            self.last_turn_id = None;
         } else if self.needs_resume {
             let resume_params = requests::ThreadResumeParams {
                 thread_id: self.id.clone().unwrap_or_default(),
@@ -851,11 +1173,146 @@ impl Thread {
             let resumed = self.codex.inner.client.thread_resume(resume_params).await?;
             self.id = Some(resumed.thread.id);
             self.needs_resume = false;
+            self.last_turn_id = None;
         }
 
         let thread_id = self.id.clone().ok_or_else(|| {
             ClientError::TransportSend("thread id unavailable after start/resume".to_string())
         })?;
+
+        Ok((thread_id, emit_thread_started))
+    }
+
+    pub async fn set_name(
+        &mut self,
+        name: impl Into<String>,
+    ) -> Result<responses::ThreadSetNameResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_name_set(requests::ThreadSetNameParams {
+                thread_id,
+                name: name.into(),
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn read(
+        &mut self,
+        include_turns: Option<bool>,
+    ) -> Result<responses::ThreadReadResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_read(requests::ThreadReadParams {
+                thread_id,
+                include_turns,
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn archive(&mut self) -> Result<responses::ThreadArchiveResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_archive(requests::ThreadArchiveParams {
+                thread_id,
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn unarchive(&mut self) -> Result<responses::ThreadUnarchiveResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_unarchive(requests::ThreadUnarchiveParams {
+                thread_id,
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn rollback(
+        &mut self,
+        count: u32,
+    ) -> Result<responses::ThreadRollbackResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_rollback(requests::ThreadRollbackParams {
+                thread_id,
+                count,
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn compact_start(
+        &mut self,
+    ) -> Result<responses::ThreadCompactStartResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .thread_compact_start(requests::ThreadCompactStartParams {
+                thread_id,
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn steer(
+        &mut self,
+        input: impl Into<Input>,
+        expected_turn_id: Option<String>,
+    ) -> Result<responses::TurnSteerResult, ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        let expected_turn_id = expected_turn_id.or_else(|| self.last_turn_id.clone());
+        let expected_turn_id = expected_turn_id.ok_or_else(|| {
+            ClientError::TransportSend(
+                "turn/steer requires expected_turn_id or a previously started turn".to_string(),
+            )
+        })?;
+        self.codex
+            .inner
+            .client
+            .turn_steer(requests::TurnSteerParams {
+                thread_id,
+                input: normalize_input(input.into()),
+                expected_turn_id: Some(expected_turn_id),
+                extra: Map::new(),
+            })
+            .await
+    }
+
+    pub async fn interrupt(&mut self, turn_id: impl Into<String>) -> Result<(), ClientError> {
+        let (thread_id, _) = self.ensure_thread_started_or_resumed().await?;
+        self.codex
+            .inner
+            .client
+            .turn_interrupt(requests::TurnInterruptParams {
+                thread_id,
+                turn_id: turn_id.into(),
+                extra: Map::new(),
+            })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn run_streamed(
+        &mut self,
+        input: impl Into<Input>,
+        turn_options: TurnOptions,
+    ) -> Result<StreamedTurn, ClientError> {
+        let (thread_id, emit_thread_started) = self.ensure_thread_started_or_resumed().await?;
 
         let server_events = self.codex.inner.client.subscribe();
 
@@ -871,6 +1328,7 @@ impl Thread {
             ))
             .await?;
         let turn_id = turn_response.turn.id;
+        self.last_turn_id = Some(turn_id.clone());
 
         let (tx, rx) = mpsc::channel(256);
 
@@ -1090,7 +1548,7 @@ async fn pump_turn_events(
                 let _ = tx.send(Err(ClientError::TransportClosed)).await;
                 break;
             }
-            ServerEvent::CompatibilityWarning(_) | ServerEvent::ServerRequest(_) => {}
+            ServerEvent::ServerRequest(_) => {}
         }
     }
 }
@@ -1174,22 +1632,35 @@ fn build_turn_start_params(
     turn_options: &TurnOptions,
 ) -> requests::TurnStartParams {
     let mut extra = Map::new();
-    if let Some(skip) = options.skip_git_repo_check {
+    if let Some(skip) = turn_options
+        .skip_git_repo_check
+        .or(options.skip_git_repo_check)
+    {
         extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
     }
-    if let Some(mode) = options.web_search_mode {
+    if let Some(mode) = turn_options.web_search_mode.or(options.web_search_mode) {
         extra.insert(
             "webSearchMode".to_string(),
             Value::String(mode.as_str().to_string()),
         );
     }
-    if let Some(enabled) = options.web_search_enabled {
+    if let Some(enabled) = turn_options
+        .web_search_enabled
+        .or(options.web_search_enabled)
+    {
         extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
     }
-    if let Some(network) = options.network_access_enabled {
+    if let Some(network) = turn_options
+        .network_access_enabled
+        .or(options.network_access_enabled)
+    {
         extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
     }
-    if let Some(additional) = &options.additional_directories {
+    if let Some(additional) = turn_options
+        .additional_directories
+        .as_ref()
+        .or(options.additional_directories.as_ref())
+    {
         extra.insert(
             "additionalDirectories".to_string(),
             Value::Array(
@@ -1200,31 +1671,55 @@ fn build_turn_start_params(
             ),
         );
     }
-    if let Some(collaboration_mode) = &options.collaboration_mode {
+    if let Some(collaboration_mode) = turn_options
+        .collaboration_mode
+        .as_ref()
+        .or(options.collaboration_mode.as_ref())
+    {
         extra.insert(
             "collaborationMode".to_string(),
             collaboration_mode.as_value(),
         );
     }
+    if let Some(extra_overrides) = &turn_options.extra {
+        for (key, value) in extra_overrides {
+            extra.insert(key.clone(), value.clone());
+        }
+    }
 
     requests::TurnStartParams {
         thread_id: thread_id.to_string(),
         input: normalize_input(input),
-        cwd: options.working_directory.clone(),
-        model: options.model.clone(),
-        model_provider: options.model_provider.clone(),
-        effort: options
+        cwd: turn_options
+            .working_directory
+            .clone()
+            .or_else(|| options.working_directory.clone()),
+        model: turn_options.model.clone().or_else(|| options.model.clone()),
+        model_provider: turn_options
+            .model_provider
+            .clone()
+            .or_else(|| options.model_provider.clone()),
+        effort: turn_options
             .model_reasoning_effort
+            .or(options.model_reasoning_effort)
             .map(|effort| effort.as_str().to_string()),
-        summary: options
+        summary: turn_options
             .model_reasoning_summary
+            .or(options.model_reasoning_summary)
             .map(|summary| summary.as_str().to_string()),
-        personality: options.personality.map(|value| value.as_str().to_string()),
+        personality: turn_options
+            .personality
+            .or(options.personality)
+            .map(|value| value.as_str().to_string()),
         output_schema: turn_options.output_schema.clone(),
-        approval_policy: options
+        approval_policy: turn_options
             .approval_policy
+            .or(options.approval_policy)
             .map(|mode| mode.as_str().to_string()),
-        sandbox_policy: options.sandbox_policy.clone(),
+        sandbox_policy: turn_options
+            .sandbox_policy
+            .clone()
+            .or_else(|| options.sandbox_policy.clone()),
         collaboration_mode: None,
         extra,
     }
@@ -1296,23 +1791,18 @@ fn parse_usage_from_value(value: &Value) -> Option<Usage> {
         return parse_usage_from_value(last);
     }
 
-    let input_tokens = get_i64(object, "inputTokens", "input_tokens")?;
-    let cached_input_tokens =
-        get_i64(object, "cachedInputTokens", "cached_input_tokens").unwrap_or(0);
-    let output_tokens = get_i64(object, "outputTokens", "output_tokens")?;
+    let input_tokens = object.get("inputTokens").and_then(Value::as_i64)?;
+    let cached_input_tokens = object
+        .get("cachedInputTokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let output_tokens = object.get("outputTokens").and_then(Value::as_i64)?;
 
     Some(Usage {
         input_tokens,
         cached_input_tokens,
         output_tokens,
     })
-}
-
-fn get_i64(object: &Map<String, Value>, camel: &str, snake: &str) -> Option<i64> {
-    object
-        .get(camel)
-        .or_else(|| object.get(snake))
-        .and_then(Value::as_i64)
 }
 
 fn parse_thread_item(item: Value) -> ThreadItem {
@@ -1358,13 +1848,11 @@ fn parse_thread_item(item: Value) -> ThreadItem {
                 .to_string(),
             aggregated_output: object
                 .get("aggregatedOutput")
-                .or_else(|| object.get("aggregated_output"))
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
             exit_code: object
                 .get("exitCode")
-                .or_else(|| object.get("exit_code"))
                 .and_then(Value::as_i64)
                 .map(|value| value as i32),
             status: parse_command_execution_status(
@@ -1871,5 +2359,78 @@ mod tests {
             typed.output_schema,
             Some(StructuredReply::openai_output_schema())
         );
+    }
+
+    #[test]
+    fn turn_options_builder_overrides_thread_defaults() {
+        let thread_options = ThreadOptions::builder()
+            .model("gpt-5-thread-default")
+            .model_provider("provider-thread")
+            .working_directory("/tmp/thread")
+            .model_reasoning_effort(ModelReasoningEffort::Low)
+            .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .personality(Personality::Friendly)
+            .approval_policy(ApprovalMode::OnRequest)
+            .sandbox_policy(json!({"thread": true}))
+            .skip_git_repo_check(false)
+            .network_access_enabled(false)
+            .web_search_mode(WebSearchMode::Cached)
+            .web_search_enabled(false)
+            .add_directory("/tmp/thread-dir")
+            .build();
+
+        let turn_options = TurnOptions::builder()
+            .model("gpt-5-turn-override")
+            .model_provider("provider-turn")
+            .working_directory("/tmp/turn")
+            .model_reasoning_effort(ModelReasoningEffort::High)
+            .model_reasoning_summary(ModelReasoningSummary::Detailed)
+            .personality(Personality::Pragmatic)
+            .approval_policy(ApprovalMode::Never)
+            .sandbox_policy(json!({"turn": true}))
+            .skip_git_repo_check(true)
+            .network_access_enabled(true)
+            .web_search_mode(WebSearchMode::Live)
+            .web_search_enabled(true)
+            .add_directory("/tmp/turn-dir")
+            .insert_extra("customTurnFlag", Value::Bool(true))
+            .build();
+
+        let params = build_turn_start_params(
+            "thread_123",
+            Input::text("hello"),
+            &thread_options,
+            &turn_options,
+        );
+
+        assert_eq!(params.cwd.as_deref(), Some("/tmp/turn"));
+        assert_eq!(params.model.as_deref(), Some("gpt-5-turn-override"));
+        assert_eq!(params.model_provider.as_deref(), Some("provider-turn"));
+        assert_eq!(params.effort.as_deref(), Some("high"));
+        assert_eq!(params.summary.as_deref(), Some("detailed"));
+        assert_eq!(params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(params.approval_policy.as_deref(), Some("never"));
+        assert_eq!(params.sandbox_policy, Some(json!({"turn": true})));
+        assert_eq!(
+            params.extra.get("skipGitRepoCheck"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            params.extra.get("networkAccessEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            params.extra.get("webSearchMode"),
+            Some(&Value::String("live".to_string()))
+        );
+        assert_eq!(
+            params.extra.get("webSearchEnabled"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            params.extra.get("additionalDirectories"),
+            Some(&json!(["/tmp/turn-dir"]))
+        );
+        assert_eq!(params.extra.get("customTurnFlag"), Some(&Value::Bool(true)));
     }
 }

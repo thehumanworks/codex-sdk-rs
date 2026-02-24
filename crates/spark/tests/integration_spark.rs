@@ -102,7 +102,6 @@ fn assert_spark_resume_output(
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn spark_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = INTEGRATION_LOCK.lock().await;
     let env = shared_env();
@@ -121,7 +120,6 @@ async fn spark_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn spark_continue_flag_resumes_most_recent_session() -> Result<(), Box<dyn std::error::Error>>
 {
     let _guard = INTEGRATION_LOCK.lock().await;

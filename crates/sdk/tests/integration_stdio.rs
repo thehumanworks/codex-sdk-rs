@@ -70,7 +70,6 @@ async fn spawn_initialized_client() -> Result<CodexClient, Box<dyn std::error::E
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn initialize_over_stdio() -> Result<(), Box<dyn std::error::Error>> {
     let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
 
@@ -88,7 +87,6 @@ async fn initialize_over_stdio() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn rejects_requests_before_initialized_notification() -> Result<(), Box<dyn std::error::Error>>
 {
     let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
@@ -116,7 +114,6 @@ async fn rejects_requests_before_initialized_notification() -> Result<(), Box<dy
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn model_list_typed_matches_raw() -> Result<(), Box<dyn std::error::Error>> {
     let client = spawn_initialized_client().await?;
 
@@ -148,7 +145,6 @@ async fn model_list_typed_matches_raw() -> Result<(), Box<dyn std::error::Error>
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn thread_and_turn_complete_over_event_stream() -> Result<(), Box<dyn std::error::Error>> {
     let client = spawn_initialized_client().await?;
 

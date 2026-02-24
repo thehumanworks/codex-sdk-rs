@@ -1,5 +1,3 @@
-#![cfg(feature = "ws")]
-
 use std::collections::HashMap;
 use std::fs;
 use std::net::TcpListener;
@@ -83,7 +81,6 @@ async fn connect_initialized_ws_client(
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime with ws transport plus auth/network"]
 async fn auto_starts_and_reuses_persistent_loopback_websocket_server()
 -> Result<(), Box<dyn std::error::Error>> {
     let url = reserve_local_ws_url()?;
@@ -100,7 +97,6 @@ async fn auto_starts_and_reuses_persistent_loopback_websocket_server()
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime with ws transport plus auth/network"]
 async fn ws_client_start_thread_runs_and_streams() -> Result<(), Box<dyn std::error::Error>> {
     let url = reserve_local_ws_url()?;
     let client = connect_initialized_ws_client(&url).await?;

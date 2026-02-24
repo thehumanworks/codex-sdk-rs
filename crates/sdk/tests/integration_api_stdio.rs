@@ -59,7 +59,6 @@ struct SchemaConstrainedResponse {
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
@@ -82,7 +81,6 @@ async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn ask_returns_final_response_only() -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
@@ -101,7 +99,6 @@ async fn ask_returns_final_response_only() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn codex_ask_with_options_returns_final_response_only()
 -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
@@ -123,7 +120,6 @@ async fn codex_ask_with_options_returns_final_response_only()
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = codex.start_thread(ThreadOptions::default());
@@ -171,7 +167,6 @@ async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::error::Error>> {
     let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
     let mut thread = client.start_thread(ThreadOptions::default());
@@ -190,7 +185,6 @@ async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-#[ignore = "requires local codex app-server runtime"]
 async fn run_respects_output_schema_for_typed_deserialization()
 -> Result<(), Box<dyn std::error::Error>> {
     let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;

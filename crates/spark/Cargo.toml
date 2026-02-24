@@ -6,12 +6,8 @@ description = "Spark CLI for codex-app-server-sdk"
 license = "MIT"
 repository = "https://github.com/example/codex-app-server-sdk"
 
-[features]
-default = ["ws"]
-ws = ["codex-app-server-sdk/ws"]
-
 [dependencies]
-codex-app-server-sdk = { path = "../sdk", default-features = false, features = ["stdio"] }
+codex-app-server-sdk = { path = "../sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
