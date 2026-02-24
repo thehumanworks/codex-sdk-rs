@@ -1,4 +1,3 @@
-#[cfg(feature = "ws")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashMap;
@@ -59,9 +58,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-#[cfg(not(feature = "ws"))]
-fn main() {
-    eprintln!("enable the `ws` feature to run this example");
 }

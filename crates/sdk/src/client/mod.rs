@@ -7,11 +7,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 
 use crate::api::{Codex, Thread, ThreadOptions};
-use crate::compat::{CompatibilityPolicy, check_cli_version, parse_cli_version};
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
 use crate::events::{
     ServerEvent, ServerNotification, ServerRequestEvent, parse_notification, parse_server_request,
@@ -21,11 +19,8 @@ use crate::protocol::responses;
 use crate::protocol::server_requests;
 use crate::protocol::shared::{EmptyObject, RequestId};
 use crate::transport::TransportHandle;
-#[cfg(feature = "stdio")]
 use crate::transport::stdio::spawn_stdio_transport;
-#[cfg(feature = "ws")]
 use crate::transport::ws::connect_ws_transport;
-#[cfg(feature = "ws")]
 use crate::transport::ws_daemon::ensure_local_ws_app_server;
 
 type PendingMap = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
@@ -37,18 +32,76 @@ type RefreshFuture = Pin<
 >;
 type RefreshHandler =
     Arc<dyn Fn(server_requests::ChatgptAuthTokensRefreshParams) -> RefreshFuture + Send + Sync>;
+type ApplyPatchApprovalFuture = Pin<
+    Box<
+        dyn Future<Output = Result<server_requests::ApplyPatchApprovalResponse, ClientError>>
+            + Send,
+    >,
+>;
+type ApplyPatchApprovalHandler = Arc<
+    dyn Fn(server_requests::ApplyPatchApprovalParams) -> ApplyPatchApprovalFuture + Send + Sync,
+>;
+type ExecCommandApprovalFuture = Pin<
+    Box<
+        dyn Future<Output = Result<server_requests::ExecCommandApprovalResponse, ClientError>>
+            + Send,
+    >,
+>;
+type ExecCommandApprovalHandler = Arc<
+    dyn Fn(server_requests::ExecCommandApprovalParams) -> ExecCommandApprovalFuture + Send + Sync,
+>;
+type CommandExecutionRequestApprovalFuture = Pin<
+    Box<
+        dyn Future<
+                Output = Result<
+                    server_requests::CommandExecutionRequestApprovalResponse,
+                    ClientError,
+                >,
+            > + Send,
+    >,
+>;
+type CommandExecutionRequestApprovalHandler = Arc<
+    dyn Fn(
+            server_requests::CommandExecutionRequestApprovalParams,
+        ) -> CommandExecutionRequestApprovalFuture
+        + Send
+        + Sync,
+>;
+type FileChangeRequestApprovalFuture = Pin<
+    Box<
+        dyn Future<Output = Result<server_requests::FileChangeRequestApprovalResponse, ClientError>>
+            + Send,
+    >,
+>;
+type FileChangeRequestApprovalHandler = Arc<
+    dyn Fn(server_requests::FileChangeRequestApprovalParams) -> FileChangeRequestApprovalFuture
+        + Send
+        + Sync,
+>;
+type ToolRequestUserInputFuture = Pin<
+    Box<
+        dyn Future<Output = Result<server_requests::ToolRequestUserInputResponse, ClientError>>
+            + Send,
+    >,
+>;
+type ToolRequestUserInputHandler = Arc<
+    dyn Fn(server_requests::ToolRequestUserInputParams) -> ToolRequestUserInputFuture + Send + Sync,
+>;
+type DynamicToolCallFuture = Pin<
+    Box<dyn Future<Output = Result<server_requests::DynamicToolCallResponse, ClientError>> + Send>,
+>;
+type DynamicToolCallHandler =
+    Arc<dyn Fn(server_requests::DynamicToolCallParams) -> DynamicToolCallFuture + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
     pub default_timeout: Duration,
-    pub compatibility_policy: CompatibilityPolicy,
 }
 
 impl Default for ClientOptions {
     fn default() -> Self {
         Self {
             default_timeout: Duration::from_secs(30),
-            compatibility_policy: CompatibilityPolicy::Warn,
         }
     }
 }
@@ -89,6 +142,13 @@ struct Inner {
     event_tx: broadcast::Sender<ServerEvent>,
     event_rx: Mutex<broadcast::Receiver<ServerEvent>>,
     refresh_handler: RwLock<Option<RefreshHandler>>,
+    apply_patch_approval_handler: RwLock<Option<ApplyPatchApprovalHandler>>,
+    exec_command_approval_handler: RwLock<Option<ExecCommandApprovalHandler>>,
+    command_execution_request_approval_handler:
+        RwLock<Option<CommandExecutionRequestApprovalHandler>>,
+    file_change_request_approval_handler: RwLock<Option<FileChangeRequestApprovalHandler>>,
+    tool_request_user_input_handler: RwLock<Option<ToolRequestUserInputHandler>>,
+    dynamic_tool_call_handler: RwLock<Option<DynamicToolCallHandler>>,
 }
 
 #[derive(Clone)]
@@ -115,25 +175,11 @@ macro_rules! typed_null_method {
 }
 
 impl CodexClient {
-    #[cfg(feature = "stdio")]
     pub async fn spawn_stdio(config: StdioConfig) -> Result<Self, ClientError> {
-        let version_output = detect_cli_version(&config.codex_binary).await;
-        let warning = check_cli_version(
-            version_output.as_deref().and_then(parse_cli_version),
-            config.options.compatibility_policy,
-        )?;
-
         let handle = spawn_stdio_transport(&config.codex_binary, &config.args, &config.env).await?;
-        let client = Self::from_transport(handle, config.options.default_timeout);
-
-        if let Some(w) = warning {
-            client.publish_event(ServerEvent::CompatibilityWarning(w));
-        }
-
-        Ok(client)
+        Ok(Self::from_transport(handle, config.options.default_timeout))
     }
 
-    #[cfg(feature = "ws")]
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         ensure_local_ws_app_server(&config.url, &config.env).await?;
         let handle = connect_ws_transport(&config.url).await?;
@@ -152,6 +198,12 @@ impl CodexClient {
             event_tx,
             event_rx: Mutex::new(event_rx),
             refresh_handler: RwLock::new(None),
+            apply_patch_approval_handler: RwLock::new(None),
+            exec_command_approval_handler: RwLock::new(None),
+            command_execution_request_approval_handler: RwLock::new(None),
+            file_change_request_approval_handler: RwLock::new(None),
+            tool_request_user_input_handler: RwLock::new(None),
+            dynamic_tool_call_handler: RwLock::new(None),
         });
 
         tokio::spawn(run_inbound_loop(handle.inbound, inner.clone()));
@@ -194,6 +246,122 @@ impl CodexClient {
 
     pub async fn clear_chatgpt_auth_tokens_refresh_handler(&self) {
         *self.inner.refresh_handler.write().await = None;
+    }
+
+    pub async fn set_apply_patch_approval_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::ApplyPatchApprovalParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<server_requests::ApplyPatchApprovalResponse, ClientError>>
+            + Send
+            + 'static,
+    {
+        let wrapped: ApplyPatchApprovalHandler = Arc::new(move |params| Box::pin(handler(params)));
+        *self.inner.apply_patch_approval_handler.write().await = Some(wrapped);
+    }
+
+    pub async fn clear_apply_patch_approval_handler(&self) {
+        *self.inner.apply_patch_approval_handler.write().await = None;
+    }
+
+    pub async fn set_exec_command_approval_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::ExecCommandApprovalParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<server_requests::ExecCommandApprovalResponse, ClientError>>
+            + Send
+            + 'static,
+    {
+        let wrapped: ExecCommandApprovalHandler = Arc::new(move |params| Box::pin(handler(params)));
+        *self.inner.exec_command_approval_handler.write().await = Some(wrapped);
+    }
+
+    pub async fn clear_exec_command_approval_handler(&self) {
+        *self.inner.exec_command_approval_handler.write().await = None;
+    }
+
+    pub async fn set_command_execution_request_approval_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::CommandExecutionRequestApprovalParams) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: Future<
+                Output = Result<
+                    server_requests::CommandExecutionRequestApprovalResponse,
+                    ClientError,
+                >,
+            > + Send
+            + 'static,
+    {
+        let wrapped: CommandExecutionRequestApprovalHandler =
+            Arc::new(move |params| Box::pin(handler(params)));
+        *self
+            .inner
+            .command_execution_request_approval_handler
+            .write()
+            .await = Some(wrapped);
+    }
+
+    pub async fn clear_command_execution_request_approval_handler(&self) {
+        *self
+            .inner
+            .command_execution_request_approval_handler
+            .write()
+            .await = None;
+    }
+
+    pub async fn set_file_change_request_approval_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::FileChangeRequestApprovalParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<server_requests::FileChangeRequestApprovalResponse, ClientError>>
+            + Send
+            + 'static,
+    {
+        let wrapped: FileChangeRequestApprovalHandler =
+            Arc::new(move |params| Box::pin(handler(params)));
+        *self
+            .inner
+            .file_change_request_approval_handler
+            .write()
+            .await = Some(wrapped);
+    }
+
+    pub async fn clear_file_change_request_approval_handler(&self) {
+        *self
+            .inner
+            .file_change_request_approval_handler
+            .write()
+            .await = None;
+    }
+
+    pub async fn set_tool_request_user_input_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::ToolRequestUserInputParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<server_requests::ToolRequestUserInputResponse, ClientError>>
+            + Send
+            + 'static,
+    {
+        let wrapped: ToolRequestUserInputHandler =
+            Arc::new(move |params| Box::pin(handler(params)));
+        *self.inner.tool_request_user_input_handler.write().await = Some(wrapped);
+    }
+
+    pub async fn clear_tool_request_user_input_handler(&self) {
+        *self.inner.tool_request_user_input_handler.write().await = None;
+    }
+
+    pub async fn set_dynamic_tool_call_handler<F, Fut>(&self, handler: F)
+    where
+        F: Fn(server_requests::DynamicToolCallParams) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<server_requests::DynamicToolCallResponse, ClientError>>
+            + Send
+            + 'static,
+    {
+        let wrapped: DynamicToolCallHandler = Arc::new(move |params| Box::pin(handler(params)));
+        *self.inner.dynamic_tool_call_handler.write().await = Some(wrapped);
+    }
+
+    pub async fn clear_dynamic_tool_call_handler(&self) {
+        *self.inner.dynamic_tool_call_handler.write().await = None;
     }
 
     pub async fn initialize(
@@ -269,6 +437,54 @@ impl CodexClient {
         &self,
         id: RequestId,
         response: server_requests::ChatgptAuthTokensRefreshResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_apply_patch_approval(
+        &self,
+        id: RequestId,
+        response: server_requests::ApplyPatchApprovalResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_exec_command_approval(
+        &self,
+        id: RequestId,
+        response: server_requests::ExecCommandApprovalResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_command_execution_request_approval(
+        &self,
+        id: RequestId,
+        response: server_requests::CommandExecutionRequestApprovalResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_file_change_request_approval(
+        &self,
+        id: RequestId,
+        response: server_requests::FileChangeRequestApprovalResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_tool_request_user_input(
+        &self,
+        id: RequestId,
+        response: server_requests::ToolRequestUserInputResponse,
+    ) -> Result<(), ClientError> {
+        self.respond_server_request(id, response).await
+    }
+
+    pub async fn respond_dynamic_tool_call(
+        &self,
+        id: RequestId,
+        response: server_requests::DynamicToolCallResponse,
     ) -> Result<(), ClientError> {
         self.respond_server_request(id, response).await
     }
@@ -590,10 +806,6 @@ impl CodexClient {
             ClientError::TransportSend(format!("failed to send outbound frame: {err}"))
         })
     }
-
-    fn publish_event(&self, event: ServerEvent) {
-        let _ = self.inner.event_tx.send(event);
-    }
 }
 
 async fn run_inbound_loop(
@@ -660,25 +872,110 @@ async fn try_auto_handle_server_request(inner: &Arc<Inner>, request: &ServerRequ
             };
 
             let response = handler(params.clone()).await;
-            let payload = match response {
-                Ok(tokens) => json!({ "id": id, "result": tokens }),
-                Err(err) => json!({
-                    "id": id,
-                    "error": {
-                        "code": -32001,
-                        "message": format!("chatgptAuthTokens refresh handler failed: {err}")
-                    }
-                }),
+            send_server_request_handler_result(inner, id, response, "chatgptAuthTokens refresh")
+                .await
+        }
+        ServerRequestEvent::ApplyPatchApproval { id, params } => {
+            let handler = inner.apply_patch_approval_handler.read().await.clone();
+            let Some(handler) = handler else {
+                return false;
             };
 
-            if inner.outbound.send(payload).await.is_err() {
-                let _ = inner.event_tx.send(ServerEvent::TransportClosed);
-            }
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(inner, id, response, "applyPatchApproval").await
+        }
+        ServerRequestEvent::ExecCommandApproval { id, params } => {
+            let handler = inner.exec_command_approval_handler.read().await.clone();
+            let Some(handler) = handler else {
+                return false;
+            };
 
-            true
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(inner, id, response, "execCommandApproval").await
+        }
+        ServerRequestEvent::CommandExecutionRequestApproval { id, params } => {
+            let handler = inner
+                .command_execution_request_approval_handler
+                .read()
+                .await
+                .clone();
+            let Some(handler) = handler else {
+                return false;
+            };
+
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(
+                inner,
+                id,
+                response,
+                "item/commandExecution/requestApproval",
+            )
+            .await
+        }
+        ServerRequestEvent::FileChangeRequestApproval { id, params } => {
+            let handler = inner
+                .file_change_request_approval_handler
+                .read()
+                .await
+                .clone();
+            let Some(handler) = handler else {
+                return false;
+            };
+
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(
+                inner,
+                id,
+                response,
+                "item/fileChange/requestApproval",
+            )
+            .await
+        }
+        ServerRequestEvent::ToolRequestUserInput { id, params } => {
+            let handler = inner.tool_request_user_input_handler.read().await.clone();
+            let Some(handler) = handler else {
+                return false;
+            };
+
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(inner, id, response, "item/tool/requestUserInput")
+                .await
+        }
+        ServerRequestEvent::DynamicToolCall { id, params } => {
+            let handler = inner.dynamic_tool_call_handler.read().await.clone();
+            let Some(handler) = handler else {
+                return false;
+            };
+
+            let response = handler(params.clone()).await;
+            send_server_request_handler_result(inner, id, response, "item/tool/call").await
         }
         _ => false,
     }
+}
+
+async fn send_server_request_handler_result<R: Serialize>(
+    inner: &Arc<Inner>,
+    id: &RequestId,
+    response: Result<R, ClientError>,
+    context: &str,
+) -> bool {
+    let payload = match response {
+        Ok(result) => json!({ "id": id, "result": result }),
+        Err(err) => json!({
+            "id": id,
+            "error": {
+                "code": -32001,
+                "message": format!("{context} handler failed: {err}")
+            }
+        }),
+    };
+
+    if inner.outbound.send(payload).await.is_err() {
+        let _ = inner.event_tx.send(ServerEvent::TransportClosed);
+    }
+
+    true
 }
 
 async fn fail_all_pending(inner: &Arc<Inner>, message: &str) {
@@ -695,12 +992,93 @@ async fn fail_all_pending(inner: &Arc<Inner>, message: &str) {
     }
 }
 
-async fn detect_cli_version(binary: &str) -> Option<String> {
-    let output = Command::new(binary).arg("--version").output().await.ok()?;
-    if !output.status.success() {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    fn test_client() -> (
+        CodexClient,
+        mpsc::Sender<Result<Value, ClientError>>,
+        mpsc::Receiver<Value>,
+    ) {
+        let (transport_outbound_tx, transport_outbound_rx) = mpsc::channel::<Value>(32);
+        let (transport_inbound_tx, transport_inbound_rx) =
+            mpsc::channel::<Result<Value, ClientError>>(32);
+        let client = CodexClient::from_transport(
+            TransportHandle {
+                outbound: transport_outbound_tx,
+                inbound: transport_inbound_rx,
+            },
+            Duration::from_secs(5),
+        );
+        (client, transport_inbound_tx, transport_outbound_rx)
     }
-    String::from_utf8(output.stdout)
-        .ok()
-        .map(|s| s.trim().to_string())
+
+    #[tokio::test]
+    async fn auto_handles_apply_patch_approval_when_handler_registered() {
+        let (client, inbound_tx, mut outbound_rx) = test_client();
+
+        client
+            .set_apply_patch_approval_handler(|_| async {
+                let mut response = server_requests::ApplyPatchApprovalResponse::default();
+                response
+                    .extra
+                    .insert("decision".to_string(), Value::String("approve".to_string()));
+                Ok(response)
+            })
+            .await;
+
+        inbound_tx
+            .send(Ok(json!({
+                "id": 42,
+                "method": "applyPatchApproval",
+                "params": {}
+            })))
+            .await
+            .expect("send inbound server request");
+
+        let outbound = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .expect("timed out waiting for outbound response")
+            .expect("expected outbound response frame");
+        assert_eq!(outbound.get("id"), Some(&json!(42)));
+        assert_eq!(
+            outbound.pointer("/result/decision"),
+            Some(&Value::String("approve".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn unhandled_server_request_is_published_as_event() {
+        let (client, inbound_tx, mut outbound_rx) = test_client();
+
+        inbound_tx
+            .send(Ok(json!({
+                "id": 7,
+                "method": "applyPatchApproval",
+                "params": {}
+            })))
+            .await
+            .expect("send inbound server request");
+
+        let event = timeout(Duration::from_secs(2), client.next_event())
+            .await
+            .expect("timed out waiting for event")
+            .expect("event receive");
+
+        match event {
+            ServerEvent::ServerRequest(ServerRequestEvent::ApplyPatchApproval { id, .. }) => {
+                assert_eq!(id, RequestId::Integer(7));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        assert!(
+            timeout(Duration::from_millis(200), outbound_rx.recv())
+                .await
+                .is_err(),
+            "did not expect auto-response when handler is absent"
+        );
+    }
 }

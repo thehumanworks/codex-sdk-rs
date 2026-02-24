@@ -8,12 +8,12 @@
 - `crates/sdk/src/lib.rs`: SDK crate exports.
 - `crates/sdk/src/client/mod.rs`: async client, RPC lifecycle, handshake/readiness.
 - `crates/sdk/src/api.rs`: high-level typed `Codex`/`Thread` convenience API.
-- `crates/sdk/src/transport/`: `stdio` transport (default) and `ws` transport (feature-gated).
+- `crates/sdk/src/transport/`: `stdio` and `ws` transports (both always enabled).
 - `crates/sdk/src/protocol/`: typed request/response/notification/server-request models.
 - `crates/sdk/src/events/mod.rs`: event parsing and enum mapping.
-- `crates/sdk/src/error.rs`, `crates/sdk/src/compat.rs`: errors and CLI compatibility policy.
+- `crates/sdk/src/error.rs`: SDK/client error types.
 - `crates/sdk/examples/`: runnable SDK samples.
-- `crates/sdk/tests/`: SDK protocol tests + ignored live integration tests.
+- `crates/sdk/tests/`: SDK protocol tests + live integration tests (run by default).
 - `crates/spark/src/main.rs`: Spark CLI entrypoint.
 - `crates/spark/tests/`: Spark CLI integration tests.
 - `adrs/`: architecture decision records.
@@ -21,13 +21,11 @@
 ## Build, Test, and Development Commands
 - `cargo fmt --all`: format all Rust code.
 - `cargo check --workspace`: compile validation for all workspace members.
-- `cargo check -p codex-app-server-sdk --features ws`: SDK websocket feature validation.
-- `cargo check -p spark --features ws`: Spark websocket mode validation.
-- `cargo test --workspace -- --nocapture`: unit and non-ignored tests for all workspace members.
-- `cargo test -p codex-app-server-sdk --test integration_stdio -- --ignored --nocapture`: real `codex app-server` SDK tests.
-- `cargo test -p codex-app-server-sdk --test integration_api_stdio -- --ignored --nocapture`: real high-level API tests.
-- `cargo test -p codex-app-server-sdk --features ws --test integration_ws -- --ignored --nocapture`: real websocket transport tests.
-- `cargo test -p spark --test integration_spark -- --ignored --nocapture`: real `spark` CLI tests (resume/continue flows).
+- `cargo test --workspace -- --nocapture`: full workspace test suite (including integration tests).
+- `cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture`: real `codex app-server` SDK tests.
+- `cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture`: real high-level API tests.
+- `cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture`: real websocket transport tests.
+- `cargo test -p spark --test integration_spark -- --nocapture`: real `spark` CLI tests (resume/continue flows).
 - `cargo run -p codex-app-server-sdk --example raw_fallback`: raw RPC smoke test.
 - `cargo run -p codex-app-server-sdk --example turn_start_stream`: live turn streaming test.
 - `cargo run -p spark -- "..."`: one-shot run (streamed by default) with fixed `gpt-5.3-codex-spark` + `xhigh`.
@@ -41,17 +39,18 @@
 - Required for merge:
 - `cargo fmt --all`
 - `cargo check --workspace`
-- `cargo check -p codex-app-server-sdk --features ws`
-- `cargo check -p spark --features ws`
 - `cargo test --workspace -- --nocapture`
 - Also required when touching protocol parsing, lifecycle, or transport:
-- `cargo test -p codex-app-server-sdk --test integration_stdio -- --ignored --nocapture`
+- `cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture`
+- `cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture`
+- `cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture`
+- `cargo test -p spark --test integration_spark -- --nocapture`
 - If live tests fail, treat the failure as actionable and fix the underlying cause (do not dismiss as environmental).
 
 ## Agent Workflow
 1. Preflight: `rustc --version`, `cargo --version`, `codex --version`.
-2. Implement minimal typed changes first; keep compatibility fallbacks.
-3. Validate in order: `fmt`, `check --workspace`, `check -p codex-app-server-sdk --features ws`, `check -p spark --features ws`, `test --workspace`, live integration tests.
+2. Implement minimal typed changes first; preserve raw fallback APIs for protocol drift.
+3. Validate in order: `fmt`, `check --workspace`, `test --workspace`, `test -p codex-app-server-sdk --test integration_stdio`, `test -p codex-app-server-sdk --test integration_api_stdio`, `test -p codex-app-server-sdk --test integration_ws`, `test -p spark --test integration_spark`.
 4. If behavior changes, update `crates/sdk/examples/` and `README.md` in the same PR.
 
 ## Agent Communication & Verification
@@ -67,7 +66,7 @@
 ## Testing Guidelines
 - Use `#[test]` for pure protocol/unit behavior and `#[tokio::test]` for async flows.
 - Name tests as behavior statements (for example, `model_list_typed_matches_raw`).
-- Live tests must be `#[ignore]` unless they are deterministic in CI.
+- Live integration tests run by default and must not be marked `#[ignore]`.
 - For protocol changes, add serialization + event-path coverage.
 - For lifecycle changes, test handshake invariant: `initialize()` then `initialized()` before normal RPC.
 
@@ -89,7 +88,7 @@
 - Code compiles and all required checks pass (see CI Merge Gate).
 - New behavior has tests (unit and/or integration) and existing tests are updated.
 - Public behavior changes are reflected in `README.md` and relevant `crates/sdk/examples/`.
-- Compatibility implications are documented when changing protocol parsing or `crates/sdk/src/compat.rs`.
+- Protocol/wire implications are documented when changing parsing or serde behavior.
 - No secrets are added to code, tests, examples, or logs.
 
 ## Release and Versioning Policy
@@ -97,10 +96,10 @@
 - `patch`: bug fix, no public API break.
 - `minor`: additive public API or behavior-compatible expansion.
 - `major` (or pre-1.0 designated breaking bump): removal/rename/semantic break.
-- When changing tested CLI range in `crates/sdk/src/compat.rs`, update:
-- `README.md` compatibility text.
+- When changing protocol/runtime expectations, update:
+- `README.md` behavior text.
 - `AGENTS.md` runtime expectations.
-- PR evidence with at least one ignored live integration test run.
+- PR evidence with full live integration test run results.
 - New typed protocol features must preserve raw fallback unless a replacement path is documented.
 
 ## Public API Change Rules
@@ -124,15 +123,15 @@
 - Parse unknown notifications/server requests into explicit `Unknown` variants instead of failing hard.
 
 ## Known Runtime Expectations
-- Live integration tests require local `codex app-server` and active auth.
+- Live integration tests run by default and require local `codex app-server` plus active auth.
 - If local `~/.codex/config.toml` or `$CODEX_HOME/config.toml` contains unsupported keys, integration tests can fail with config-derivation errors; prefer isolating `HOME`/`CODEX_HOME` in test runtime env when validating SDK behavior independent of user config.
 - `crates/sdk/examples/auth_api_key.rs` requires `OPENAI_API_KEY`.
-- Compatibility policy is enforced in `crates/sdk/src/compat.rs`; update tests/docs when adjusting version ranges.
-- With `ws` enabled, loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
+- Loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
+- `Codex` forwards the full typed RPC surface (thread lifecycle, turn controls, auth/config, skills, MCP, review, and raw fallback) after ensuring handshake readiness.
 - High-level API includes final-response shortcuts: `Thread::ask(...)`, `Codex::ask(...)`, and `Codex::ask_with_options(...)`, which return only the final agent message text.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
-- Use `TurnOptions::builder()` for per-turn output schema control; `output_schema` maps directly to app-server `turn/start.output_schema` and accepts either raw `serde_json::Value` or typed schemas via `output_schema_for::<T>()`.
+- Use `TurnOptions::builder()` for per-turn control and overrides; it covers `output_schema` plus per-turn `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox policy, collaboration mode, and raw extra fields.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
 - The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
 - `spark --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.

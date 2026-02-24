@@ -10,7 +10,6 @@ use codex_app_server_sdk::api::{
     TurnOptions,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
-#[cfg(feature = "ws")]
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,7 +17,6 @@ use thiserror::Error;
 
 const APP_NAME: &str = "spark";
 const MODEL: &str = "gpt-5.3-codex-spark";
-#[cfg(feature = "ws")]
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
@@ -274,7 +272,6 @@ async fn run() -> Result<(), SparkError> {
     Ok(())
 }
 
-#[cfg(feature = "ws")]
 async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
     let client = CodexClient::connect_ws(WsConfig {
         url: DEFAULT_WS_URL.to_string(),
@@ -283,14 +280,6 @@ async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
     })
     .await?;
     Ok(client.as_api())
-}
-
-#[cfg(not(feature = "ws"))]
-async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
-    Err(SparkError::Config(
-        "spark was built without websocket support; rerun with --stdio or rebuild with the `ws` feature"
-            .to_string(),
-    ))
 }
 
 async fn spawn_stdio_codex() -> Result<Codex, SparkError> {

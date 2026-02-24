@@ -30,8 +30,6 @@ pub enum ClientError {
         method: String,
         source: serde_json::Error,
     },
-    #[error("compatibility check failed: {0}")]
-    Compatibility(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

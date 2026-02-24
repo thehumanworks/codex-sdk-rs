@@ -6,12 +6,12 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 - `0.1.0`
 - Focused on deterministic automation: explicit timeouts and no implicit retries.
-- Typed v2 request methods with raw JSON fallback for forward compatibility.
+- Typed v2 request methods with raw JSON fallback for protocol drift.
 
 ## Features
 
-- `stdio` (default): spawn `codex app-server` locally.
-- `ws`: websocket transport with loopback daemon management.
+- `stdio`: spawn `codex app-server` locally.
+- `ws` (always enabled): websocket transport with loopback daemon management.
   - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), the SDK reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
   - Non-loopback URLs remain connect-only (no process management).
   - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
@@ -72,7 +72,9 @@ println!("response: {}", turn.final_response);
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
 
-`TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`.
+`TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`, plus per-turn overrides for `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox, collaboration mode, and raw extra fields.
+
+High-level thread lifecycle helpers now include `set_name(...)`, `read(...)`, `archive()`, `unarchive()`, `rollback(...)`, `compact_start()`, `steer(...)`, and `interrupt(...)`.
 
 Use `ask(...)` or `ask_with_options(...)` when you only need the final response string:
 
@@ -165,18 +167,6 @@ The same `start_thread(...)`, `run(...)`, and `run_streamed(...)` flow works for
 - Requests are blocked client-side until you complete both steps: `initialize()` then `initialized()`.
 - Unknown events and fields are preserved through `Unknown` variants and `extra` maps.
 
-## Compatibility
-
-The SDK checks local `codex-cli` version (stdio mode) against the tested range:
-
-- `>=0.100.0-alpha.2, <0.101.0`
-
-Control behavior with `CompatibilityPolicy`:
-
-- `Warn` (default): continue and emit compatibility warning event.
-- `Strict`: fail client startup on mismatch.
-- `Off`: skip checks.
-
 ## Auth support
 
 Typed methods include:
@@ -197,6 +187,10 @@ Use:
 - `send_raw_notification(method, params)`
 
 for newly added methods or fields not yet wrapped in typed helpers.
+
+## Full Typed RPC Coverage
+
+`Codex` now forwards the full typed client RPC surface after handshake initialization, including thread lifecycle operations, turn controls, auth/config methods, skills/MCP/review APIs, and typed null-parameter methods.
 
 ## Examples
 
@@ -272,10 +266,10 @@ See `docs/spark-session-resumption.md` for additional details.
 These tests execute against a real local `codex app-server` process:
 
 ```bash
-cargo test -p codex-app-server-sdk --test integration_stdio -- --ignored --nocapture
-cargo test -p codex-app-server-sdk --test integration_api_stdio -- --ignored --nocapture
-cargo test -p codex-app-server-sdk --features ws --test integration_ws -- --ignored --nocapture
-cargo test -p spark --test integration_spark -- --ignored --nocapture
+cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture
+cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture
+cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture
+cargo test -p spark --test integration_spark -- --nocapture
 ```
 
 ## License

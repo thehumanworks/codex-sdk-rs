@@ -9,7 +9,6 @@ use crate::protocol::shared::RequestId;
 pub enum ServerEvent {
     Notification(ServerNotification),
     ServerRequest(ServerRequestEvent),
-    CompatibilityWarning(String),
     TransportClosed,
 }
 
