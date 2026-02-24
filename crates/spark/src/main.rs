@@ -24,7 +24,7 @@ const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 
 const USAGE: &str = "\
-Usage: spark [--agent NAME] [--final-response] [--stdio] [-c | -r SESSION_ID] [PROMPT...]
+Usage: spark [--agent NAME] [--cwd PATH] [--final-response] [--stdio] [-c | -r SESSION_ID] [PROMPT...]
 
 Runs one turn with:
   model: gpt-5.3-codex-spark
@@ -32,7 +32,8 @@ Runs one turn with:
   transport: websocket (default, ws://127.0.0.1:4222)
 
 Options:
-  --agent NAME    Load ~/.codex/agents/NAME.md
+  --agent NAME    Load ~/.codex/config.toml [agents.NAME]
+  --cwd PATH      Set Codex working directory (default: current shell directory)
   --stdio        Use app-server stdio transport instead of websocket default
   -c, --continue
                  Resume the most recent recorded session (codex resume --last equivalent)
@@ -60,6 +61,7 @@ enum TransportMode {
 #[derive(Debug)]
 struct CliArgs {
     agent: Option<String>,
+    working_directory: Option<String>,
     resume_target: Option<ResumeTarget>,
     final_response_only: bool,
     transport_mode: TransportMode,
@@ -72,19 +74,25 @@ struct LoadedAgent {
 }
 
 #[derive(Debug, Deserialize)]
-struct AgentFrontmatter {
-    name: String,
+struct CodexConfigFile {
     #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    skills: Option<SkillsField>,
+    agents: toml::Table,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum SkillsField {
-    Single(String),
-    Multiple(Vec<String>),
+struct AgentRoleConfig {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    config_file: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentConfigLayer {
+    #[serde(default)]
+    developer_instructions: Option<String>,
+    #[serde(default)]
+    model_instructions_file: Option<String>,
 }
 
 #[derive(Debug)]
@@ -105,11 +113,11 @@ enum SparkError {
     Client(#[from] ClientError),
     #[error(transparent)]
     ThreadRun(#[from] ThreadRunError),
-    #[error("failed to parse YAML frontmatter in {}: {source}", .path.display())]
-    Frontmatter {
+    #[error("failed to parse TOML in {}: {source}", .path.display())]
+    Toml {
         path: PathBuf,
         #[source]
-        source: serde_yaml::Error,
+        source: toml::de::Error,
     },
 }
 
@@ -141,6 +149,7 @@ async fn run() -> Result<(), SparkError> {
 
     let CliArgs {
         agent,
+        working_directory,
         resume_target,
         final_response_only,
         transport_mode,
@@ -148,10 +157,15 @@ async fn run() -> Result<(), SparkError> {
     } = cli;
 
     let prompt = resolve_prompt(prompt_parts)?;
+    let working_directory = match working_directory {
+        Some(path) => path,
+        None => resolve_current_working_directory()?,
+    };
 
     let mut thread_options = ThreadOptions::builder()
         .model(MODEL)
-        .model_reasoning_effort(ModelReasoningEffort::XHigh);
+        .model_reasoning_effort(ModelReasoningEffort::XHigh)
+        .working_directory(working_directory);
     if let Some(agent_name) = agent {
         let agent = load_agent_profile(&agent_name)?;
         thread_options = thread_options.developer_instructions(agent.instructions);
@@ -422,6 +436,7 @@ fn ensure_message_separator<W: Write>(
 
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
     let mut agent: Option<String> = None;
+    let mut working_directory: Option<String> = None;
     let mut resume_target: Option<ResumeTarget> = None;
     let mut final_response_only = false;
     let mut transport_mode = TransportMode::WebSocket;
@@ -480,6 +495,17 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 agent = Some(normalize_agent_name(raw)?);
                 continue;
             }
+            if arg == "--cwd" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --cwd".to_string()))?;
+                set_working_directory(&mut working_directory, &raw)?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--cwd=") {
+                set_working_directory(&mut working_directory, raw)?;
+                continue;
+            }
             if arg == "--final-response" {
                 if final_response_only {
                     return Err(SparkError::Usage(
@@ -508,11 +534,22 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
 
     Ok(ParsedCommand::Run(CliArgs {
         agent,
+        working_directory,
         resume_target,
         final_response_only,
         transport_mode,
         prompt_parts,
     }))
+}
+
+fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), SparkError> {
+    if slot.is_some() {
+        return Err(SparkError::Usage(
+            "--cwd may only be provided once".to_string(),
+        ));
+    }
+    *slot = Some(normalize_working_directory(raw)?);
+    Ok(())
 }
 
 fn set_resume_target(
@@ -539,7 +576,9 @@ fn normalize_session_id(raw: &str) -> Result<String, SparkError> {
 }
 
 fn normalize_agent_name(raw: &str) -> Result<String, SparkError> {
-    let candidate = raw.trim().trim_end_matches(".md");
+    let candidate = raw.trim();
+    let candidate = candidate.strip_suffix(".toml").unwrap_or(candidate);
+    let candidate = candidate.strip_suffix(".md").unwrap_or(candidate);
     if candidate.is_empty() {
         return Err(SparkError::Usage("agent name cannot be empty".to_string()));
     }
@@ -564,6 +603,22 @@ fn normalize_agent_name(raw: &str) -> Result<String, SparkError> {
     Ok(candidate.to_string())
 }
 
+fn normalize_working_directory(raw: &str) -> Result<String, SparkError> {
+    if raw.trim().is_empty() {
+        return Err(SparkError::Usage(
+            "working directory for --cwd cannot be empty".to_string(),
+        ));
+    }
+    Ok(raw.to_string())
+}
+
+fn resolve_current_working_directory() -> Result<String, SparkError> {
+    let cwd = env::current_dir().map_err(|error| {
+        SparkError::Config(format!("failed to resolve current directory: {error}"))
+    })?;
+    Ok(cwd.to_string_lossy().to_string())
+}
+
 fn resolve_prompt(prompt_parts: Vec<String>) -> Result<String, SparkError> {
     if !prompt_parts.is_empty() {
         return Ok(prompt_parts.join(" "));
@@ -585,14 +640,21 @@ fn resolve_prompt(prompt_parts: Vec<String>) -> Result<String, SparkError> {
 }
 
 fn load_agent_profile(agent_name: &str) -> Result<LoadedAgent, SparkError> {
-    let home = resolve_home_dir().ok_or_else(|| {
+    let codex_home = resolve_codex_home_dir().ok_or_else(|| {
         SparkError::Config(
-            "unable to resolve home directory (expected HOME, USERPROFILE, or HOMEDRIVE+HOMEPATH)"
+            "unable to resolve Codex home directory (expected CODEX_HOME, HOME, USERPROFILE, or HOMEDRIVE+HOMEPATH)"
                 .to_string(),
         )
     })?;
-    let agents_dir = home.join(".codex").join("agents");
-    load_agent_profile_from_dir(agent_name, &agents_dir)
+    let config_path = codex_home.join("config.toml");
+    load_agent_profile_from_config(agent_name, &config_path)
+}
+
+fn resolve_codex_home_dir() -> Option<PathBuf> {
+    if let Some(codex_home) = env::var_os("CODEX_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(codex_home));
+    }
+    resolve_home_dir().map(|home| home.join(".codex"))
 }
 
 fn resolve_home_dir() -> Option<PathBuf> {
@@ -612,110 +674,138 @@ fn resolve_home_dir() -> Option<PathBuf> {
     }
 }
 
-fn load_agent_profile_from_dir(
+fn load_agent_profile_from_config(
     agent_name: &str,
-    agents_dir: &Path,
+    config_path: &Path,
 ) -> Result<LoadedAgent, SparkError> {
-    let path = agents_dir.join(format!("{agent_name}.md"));
-    let raw = fs::read_to_string(&path).map_err(|error| {
+    let config_raw = fs::read_to_string(config_path).map_err(|error| {
         SparkError::Config(format!(
-            "failed to read agent file {}: {error}",
-            path.display()
+            "failed to read Codex config file {}: {error}",
+            config_path.display()
         ))
     })?;
-    let (frontmatter_raw, body_raw) = split_frontmatter(&raw).map_err(|message| {
-        SparkError::Config(format!("invalid agent file {}: {message}", path.display()))
-    })?;
-
-    let frontmatter: AgentFrontmatter =
-        serde_yaml::from_str(&frontmatter_raw).map_err(|source| SparkError::Frontmatter {
-            path: path.clone(),
+    let config: CodexConfigFile =
+        toml::from_str(&config_raw).map_err(|source| SparkError::Toml {
+            path: config_path.to_path_buf(),
             source,
         })?;
-
-    let file_stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("");
-    if frontmatter.name != file_stem {
-        return Err(SparkError::Config(format!(
-            "agent file {} must declare name '{}' in frontmatter, found '{}'",
-            path.display(),
-            file_stem,
-            frontmatter.name
-        )));
-    }
-    if frontmatter.name != agent_name {
-        return Err(SparkError::Config(format!(
-            "agent file {} declares '{}', but --agent requested '{}'",
-            path.display(),
-            frontmatter.name,
+    let role_value = config.agents.get(agent_name).ok_or_else(|| {
+        SparkError::Config(format!(
+            "agent '{}' was not found in {} under [agents.{}]",
+            agent_name,
+            config_path.display(),
             agent_name
-        )));
-    }
-
-    let skills = normalize_skills(frontmatter.skills);
-    let description = frontmatter
+        ))
+    })?;
+    let role: AgentRoleConfig = role_value.clone().try_into().map_err(|source| {
+        SparkError::Config(format!(
+            "invalid [agents.{agent_name}] in {}: {source}",
+            config_path.display()
+        ))
+    })?;
+    let instructions = if let Some(config_file) = role
+        .config_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let role_config_path = resolve_path_from_file(config_path, config_file);
+        let role_config_raw = fs::read_to_string(&role_config_path).map_err(|error| {
+            SparkError::Config(format!(
+                "failed to read agent config file for '{}' at {}: {error}",
+                agent_name,
+                role_config_path.display()
+            ))
+        })?;
+        let role_config: AgentConfigLayer =
+            toml::from_str(&role_config_raw).map_err(|source| SparkError::Toml {
+                path: role_config_path.clone(),
+                source,
+            })?;
+        resolve_agent_instructions(agent_name, &role, &role_config, &role_config_path)?
+    } else if let Some(description) = role
         .description
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(&frontmatter.name);
-    let body = body_raw.trim().to_string();
-    let instructions = compose_instructions(description, &skills, &body);
+    {
+        description.to_string()
+    } else {
+        return Err(SparkError::Config(format!(
+            "[agents.{agent_name}] in {} must set config_file or description",
+            config_path.display()
+        )));
+    };
 
     Ok(LoadedAgent { instructions })
 }
 
-fn split_frontmatter(content: &str) -> Result<(String, String), String> {
-    let normalized = content.replace("\r\n", "\n");
-    let without_bom = normalized.trim_start_matches('\u{feff}');
-    let lines: Vec<&str> = without_bom.split('\n').collect();
-    if lines.first().is_none_or(|line| line.trim() != "---") {
-        return Err("missing leading YAML frontmatter delimiter '---'".to_string());
+fn resolve_agent_instructions(
+    agent_name: &str,
+    role: &AgentRoleConfig,
+    role_config: &AgentConfigLayer,
+    role_config_path: &Path,
+) -> Result<String, SparkError> {
+    if let Some(instructions) = role_config
+        .developer_instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(instructions.to_string());
     }
 
-    let closing_index = lines
-        .iter()
-        .enumerate()
-        .skip(1)
-        .find_map(|(index, line)| (line.trim() == "---").then_some(index))
-        .ok_or_else(|| "missing closing YAML frontmatter delimiter '---'".to_string())?;
-
-    let frontmatter = lines[1..closing_index].join("\n");
-    let body = lines[(closing_index + 1)..].join("\n");
-    Ok((frontmatter, body))
-}
-
-fn normalize_skills(skills: Option<SkillsField>) -> Vec<String> {
-    let values = match skills {
-        Some(SkillsField::Single(skill)) => vec![skill],
-        Some(SkillsField::Multiple(items)) => items,
-        None => Vec::new(),
-    };
-    values
-        .into_iter()
-        .map(|value| value.trim().to_string())
+    if let Some(model_instructions_file) = role_config
+        .model_instructions_file
+        .as_deref()
+        .map(str::trim)
         .filter(|value| !value.is_empty())
-        .collect()
+    {
+        let instructions_path = resolve_path_from_file(role_config_path, model_instructions_file);
+        let instructions = fs::read_to_string(&instructions_path).map_err(|error| {
+            SparkError::Config(format!(
+                "failed to read model_instructions_file for '{}' at {}: {error}",
+                agent_name,
+                instructions_path.display()
+            ))
+        })?;
+        let trimmed = instructions.trim();
+        if trimmed.is_empty() {
+            return Err(SparkError::Config(format!(
+                "model_instructions_file for '{}' at {} is empty",
+                agent_name,
+                instructions_path.display()
+            )));
+        }
+        return Ok(trimmed.to_string());
+    }
+
+    if let Some(description) = role
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(description.to_string());
+    }
+
+    Err(SparkError::Config(format!(
+        "agent '{}' config {} must set `developer_instructions` or `model_instructions_file`",
+        agent_name,
+        role_config_path.display()
+    )))
 }
 
-fn compose_instructions(description: &str, skills: &[String], body: &str) -> String {
-    let role = format!("<ROLE>{description}</ROLE>");
-    let skill_lines = if skills.is_empty() {
-        String::new()
+fn resolve_path_from_file(file_path: &Path, raw_path: &str) -> PathBuf {
+    let candidate = PathBuf::from(raw_path);
+    if candidate.is_absolute() {
+        candidate
     } else {
-        skills
-            .iter()
-            .map(|skill| format!("\t\t<SKILL>{skill}</SKILL>"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let instructions = format!(
-        "<INSTRUCTIONS>\n\t<SKILLS>\n{skill_lines}\n\t</SKILLS>\n\t<CONTENT>\n\t\t{body}\n\t</CONTENT>\n</INSTRUCTIONS>"
-    );
-
-    format!("{role}\n{instructions}")
+        file_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(candidate)
+    }
 }
 
 #[cfg(test)]
@@ -740,6 +830,7 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(cli.working_directory.is_none());
         assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
@@ -763,6 +854,7 @@ mod tests {
         };
 
         assert_eq!(cli.agent.as_deref(), Some("writer"));
+        assert!(cli.working_directory.is_none());
         assert!(cli.resume_target.is_none());
         assert!(!cli.final_response_only);
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
@@ -786,9 +878,44 @@ mod tests {
         };
 
         assert!(cli.resume_target.is_none());
+        assert!(cli.working_directory.is_none());
         assert!(cli.final_response_only);
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_cwd_flag() {
+        let parsed = parse_cli_args(
+            vec![
+                "--cwd".to_string(),
+                "/tmp/project".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.working_directory.as_deref(), Some("/tmp/project"));
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_cwd_equals_form() {
+        let parsed =
+            parse_cli_args(vec!["--cwd=/tmp/project".to_string(), "hello".to_string()].into_iter())
+                .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.working_directory.as_deref(), Some("/tmp/project"));
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
     #[test]
@@ -925,115 +1052,226 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_args_rejects_missing_cwd_value() {
+        let error =
+            parse_cli_args(vec!["--cwd".to_string()].into_iter()).expect_err("missing --cwd value");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_empty_cwd_value() {
+        let error =
+            parse_cli_args(vec!["--cwd=".to_string()].into_iter()).expect_err("empty --cwd value");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_duplicate_cwd_flag() {
+        let error = parse_cli_args(
+            vec![
+                "--cwd".to_string(),
+                "/tmp/a".to_string(),
+                "--cwd=/tmp/b".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("duplicate cwd");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
     fn parse_cli_args_rejects_unknown_option() {
         let error = parse_cli_args(vec!["--nope".to_string()].into_iter()).expect_err("invalid");
         assert!(matches!(error, SparkError::Usage(_)));
     }
 
     #[test]
-    fn split_frontmatter_extracts_yaml_and_body() {
-        let input = "\
----
-name: spark
-skills:
-  - checks
----
-
-body text
-";
-        let (frontmatter, body) = split_frontmatter(input).expect("frontmatter parsed");
-        assert!(frontmatter.contains("name: spark"));
-        assert!(frontmatter.contains("skills"));
-        assert!(body.contains("body text"));
+    fn normalize_agent_name_trims_toml_extension() {
+        let normalized = normalize_agent_name("reviewer.toml").expect("normalized");
+        assert_eq!(normalized, "reviewer");
     }
 
     #[test]
-    fn split_frontmatter_accepts_closing_delimiter_with_trailing_spaces() {
-        let input = "\
----
-name: spark
----   
-body text
-";
-        let (frontmatter, body) = split_frontmatter(input).expect("frontmatter parsed");
-        assert!(frontmatter.contains("name: spark"));
-        assert_eq!(body, "body text\n");
-    }
-
-    #[test]
-    fn load_agent_profile_rejects_name_mismatch() {
+    fn load_agent_profile_from_config_uses_developer_instructions() {
         let dir = make_temp_dir();
-        let path = dir.join("spark.md");
+        let config_path = dir.join("config.toml");
+        let roles_dir = dir.join("roles");
+        fs::create_dir_all(&roles_dir).expect("create roles dir");
         fs::write(
-            &path,
+            &config_path,
             "\
----
-name: different
-skills: [a]
----
-instructions
+[agents.reviewer]
+description = \"Review code thoroughly\"
+config_file = \"roles/reviewer.toml\"
 ",
         )
-        .expect("write");
+        .expect("write config");
+        fs::write(
+            roles_dir.join("reviewer.toml"),
+            "\
+model = \"gpt-5.3-codex\"
+developer_instructions = \"Focus on correctness and tests.\"
+",
+        )
+        .expect("write role config");
 
-        let error = load_agent_profile_from_dir("spark", &dir).expect_err("name mismatch");
+        let profile = load_agent_profile_from_config("reviewer", &config_path).expect("load");
+        assert_eq!(profile.instructions, "Focus on correctness and tests.");
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_agent_profile_from_config_uses_model_instructions_file_when_needed() {
+        let dir = make_temp_dir();
+        let config_path = dir.join("config.toml");
+        let roles_dir = dir.join("roles");
+        fs::create_dir_all(&roles_dir).expect("create roles dir");
+        fs::write(
+            &config_path,
+            "\
+[agents.reviewer]
+config_file = \"roles/reviewer.toml\"
+",
+        )
+        .expect("write config");
+        fs::write(
+            roles_dir.join("reviewer.toml"),
+            "model_instructions_file = \"reviewer.md\"\n",
+        )
+        .expect("write role config");
+        fs::write(
+            roles_dir.join("reviewer.md"),
+            "\nBe strict about regressions.\n",
+        )
+        .expect("write instructions file");
+
+        let profile = load_agent_profile_from_config("reviewer", &config_path).expect("load");
+        assert_eq!(profile.instructions, "Be strict about regressions.");
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_agent_profile_from_config_prefers_developer_instructions_over_model_file() {
+        let dir = make_temp_dir();
+        let config_path = dir.join("config.toml");
+        let roles_dir = dir.join("roles");
+        fs::create_dir_all(&roles_dir).expect("create roles dir");
+        fs::write(
+            &config_path,
+            "\
+[agents.reviewer]
+config_file = \"roles/reviewer.toml\"
+",
+        )
+        .expect("write config");
+        fs::write(
+            roles_dir.join("reviewer.toml"),
+            "\
+developer_instructions = \"Prefer inline instructions\"
+model_instructions_file = \"reviewer.md\"
+",
+        )
+        .expect("write role config");
+        fs::write(
+            roles_dir.join("reviewer.md"),
+            "Use file instructions instead.\n",
+        )
+        .expect("write instructions file");
+
+        let profile = load_agent_profile_from_config("reviewer", &config_path).expect("load");
+        assert_eq!(profile.instructions, "Prefer inline instructions");
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_agent_profile_from_config_falls_back_to_description() {
+        let dir = make_temp_dir();
+        let config_path = dir.join("config.toml");
+        let roles_dir = dir.join("roles");
+        fs::create_dir_all(&roles_dir).expect("create roles dir");
+        fs::write(
+            &config_path,
+            "\
+[agents.reviewer]
+description = \"Review code thoroughly\"
+config_file = \"roles/reviewer.toml\"
+",
+        )
+        .expect("write config");
+        fs::write(
+            roles_dir.join("reviewer.toml"),
+            "model = \"gpt-5.3-codex\"\n",
+        )
+        .expect("write role config");
+
+        let profile = load_agent_profile_from_config("reviewer", &config_path).expect("load");
+        assert_eq!(profile.instructions, "Review code thoroughly");
+
+        fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
+    fn load_agent_profile_from_config_rejects_missing_role() {
+        let dir = make_temp_dir();
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            "[agents.default]\nconfig_file = \"roles/default.toml\"\n",
+        )
+        .expect("write config");
+
+        let error =
+            load_agent_profile_from_config("reviewer", &config_path).expect_err("missing role");
         assert!(matches!(error, SparkError::Config(_)));
+        let message = format!("{error}");
+        assert!(message.contains("agents.reviewer"));
 
         fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]
-    fn load_agent_profile_uses_skills_and_body() {
+    fn load_agent_profile_from_config_rejects_missing_config_file_and_description() {
         let dir = make_temp_dir();
-        let path = dir.join("spark.md");
-        fs::write(
-            &path,
-            "\
----
-name: spark
-description: Spark coding assistant
-skills:
-  - checks
-  - lint
----
-Do the task.
-",
-        )
-        .expect("write");
+        let config_path = dir.join("config.toml");
+        fs::write(&config_path, "[agents.reviewer]\n").expect("write config");
 
-        let profile = load_agent_profile_from_dir("spark", &dir).expect("load profile");
-        assert!(
-            profile
-                .instructions
-                .starts_with("<ROLE>Spark coding assistant</ROLE>\n<INSTRUCTIONS>")
-        );
-        assert!(profile.instructions.contains("<SKILLS>"));
-        assert!(profile.instructions.contains("<SKILL>checks</SKILL>"));
-        assert!(profile.instructions.contains("<SKILL>lint</SKILL>"));
-        assert!(profile.instructions.contains("<CONTENT>"));
-        assert!(profile.instructions.contains("Do the task."));
+        let error = load_agent_profile_from_config("reviewer", &config_path)
+            .expect_err("missing config_file and description");
+        assert!(matches!(error, SparkError::Config(_)));
+        let message = format!("{error}");
+        assert!(message.contains("must set config_file or description"));
 
         fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]
-    fn load_agent_profile_falls_back_to_name_when_description_missing() {
+    fn load_agent_profile_from_config_rejects_missing_model_instructions_file() {
         let dir = make_temp_dir();
-        let path = dir.join("spark.md");
+        let config_path = dir.join("config.toml");
+        let roles_dir = dir.join("roles");
+        fs::create_dir_all(&roles_dir).expect("create roles dir");
         fs::write(
-            &path,
+            &config_path,
             "\
----
-name: spark
-skills: [checks]
----
-Do the task.
+[agents.reviewer]
+config_file = \"roles/reviewer.toml\"
 ",
         )
-        .expect("write");
+        .expect("write config");
+        fs::write(
+            roles_dir.join("reviewer.toml"),
+            "model_instructions_file = \"missing.md\"\n",
+        )
+        .expect("write role config");
 
-        let profile = load_agent_profile_from_dir("spark", &dir).expect("load profile");
-        assert!(profile.instructions.starts_with("<ROLE>spark</ROLE>"));
+        let error = load_agent_profile_from_config("reviewer", &config_path)
+            .expect_err("missing model instructions file");
+        assert!(matches!(error, SparkError::Config(_)));
+        let message = format!("{error}");
+        assert!(message.contains("failed to read model_instructions_file"));
 
         fs::remove_dir_all(dir).expect("cleanup");
     }

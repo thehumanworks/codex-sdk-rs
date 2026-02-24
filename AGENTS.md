@@ -32,6 +32,7 @@
 - `cargo run -p codex-app-server-sdk --example turn_start_stream`: live turn streaming test.
 - `cargo run -p spark -- "..."`: one-shot run (streamed by default) with fixed `gpt-5.3-codex-spark` + `xhigh`.
 - `cargo run -p spark -- --stdio "..."`: one-shot run over stdio transport instead of default websocket.
+- `cargo run -p spark -- --cwd <path> "..."`: one-shot run with explicit Codex working directory.
 - `cargo run -p spark -- --final-response "..."`: one-shot run that only prints final response content.
 - `cargo run -p spark -- --continue "..."`: continue the most recent recorded session.
 - `cargo run -p spark -- --resume <session_id> "..."`: resume a specific session id.
@@ -52,6 +53,11 @@
 2. Implement minimal typed changes first; keep compatibility fallbacks.
 3. Validate in order: `fmt`, `check --workspace`, `check -p codex-app-server-sdk --features ws`, `check -p spark --features ws`, `test --workspace`, live integration tests.
 4. If behavior changes, update `crates/sdk/examples/` and `README.md` in the same PR.
+
+## Agent Communication & Verification
+- Always run relevant tests/checks after code changes without waiting for user request; report results or why not run.
+- Do not invent execution rules; if unsure, re-read `AGENTS.md`/`README.md`/CI docs before stating constraints.
+- Avoid interim status narration during research; deliver one consolidated update with findings unless the user asks for step-by-step updates.
 
 ## Coding Style & Naming Conventions
 - Follow `rustfmt` output (4-space indentation, trailing commas where applicable).
@@ -128,8 +134,8 @@
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
 - Use `TurnOptions::builder()` for per-turn output schema control; `output_schema` maps directly to app-server `turn/start.output_schema` and accepts either raw `serde_json::Value` or typed schemas via `output_schema_for::<T>()`.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
-- The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
-- `spark --agent <name>` resolves `~/.codex/agents/<name>.md`, requires YAML frontmatter with matching `name`, ignores `model`/`tools`, and builds `developer_instructions` as `<ROLE>{description|name}</ROLE>` plus `<INSTRUCTIONS>` containing frontmatter `skills` and Markdown body content.
+- The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
+- `spark --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
 - On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run -p spark -- ...` or `./target/release/spark ...` to run the repository binary.
 
 ## Critical Paths and Review Focus

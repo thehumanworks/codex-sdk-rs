@@ -217,6 +217,12 @@ By default it connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-s
 cargo run -p spark -- "Summarize this repository in one sentence."
 ```
 
+By default, Spark sets Codex `cwd` to the current shell working directory where `spark` is invoked. Use `--cwd` to override:
+
+```bash
+cargo run -p spark -- --cwd /path/to/project "Summarize this repository in one sentence."
+```
+
 Use `--stdio` to force app-server stdio transport instead:
 
 ```bash
@@ -246,26 +252,18 @@ cargo run -p spark -- --resume thread_123 "Continue from that session."
 - model: `gpt-5.3-codex-spark`
 - reasoning effort: `xhigh`
 - websocket transport by default (`ws://127.0.0.1:4222`), unless `--stdio` is provided
+- Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
 - each completed `agentMessage` is newline-terminated so consecutive messages do not run together
 - `--continue` and `--resume <session_id>` are mutually exclusive
 
-Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/agents/<name>.md`.
+Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/config.toml` under `[agents.<name>]`.
 When `--stdio` is used, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
 If startup fails with a codex lookup error, run `which codex` and ensure your shell PATH includes the desired Codex CLI install.
-Files must include YAML frontmatter with a matching `name` value. `model` and `tools` frontmatter fields are ignored.
-`description` (or `name` fallback), `skills`, and Markdown body are rendered into `developer_instructions` as:
-
-```text
-<ROLE>...</ROLE>
-<INSTRUCTIONS>
-	<SKILLS>
-		<SKILL>...</SKILL>
-	</SKILLS>
-	<CONTENT>
-		...
-	</CONTENT>
-</INSTRUCTIONS>
-```
+`[agents.<name>].config_file` points to a role TOML file (relative paths resolve from the config file directory).
+`spark` maps the role to thread `developer_instructions` in this order:
+- `developer_instructions` from the role config file
+- `model_instructions_file` (file contents, path resolved relative to the role config file)
+- `[agents.<name>].description` as a fallback
 
 See `docs/spark-session-resumption.md` for additional details.
 
