@@ -140,6 +140,8 @@ pub struct ModelListResult {
 }
 
 opaque_struct!(ExperimentalFeatureListResult);
+opaque_struct!(CollaborationModeListResult);
+opaque_struct!(MockExperimentalMethodResult);
 opaque_struct!(SkillsListResult);
 opaque_struct!(SkillsRemoteReadResult);
 opaque_struct!(SkillsRemoteWriteResult);
@@ -154,12 +156,17 @@ opaque_struct!(ConfigReadResult);
 opaque_struct!(ConfigValueWriteResult);
 opaque_struct!(ConfigBatchWriteResult);
 opaque_struct!(ConfigRequirementsReadResult);
+opaque_struct!(WindowsSandboxSetupStartResult);
 opaque_struct!(LoginAccountResult);
 opaque_struct!(GetAccountResult);
 opaque_struct!(AccountRateLimitsReadResult);
 opaque_struct!(ThreadArchiveResult);
 opaque_struct!(ThreadUnarchiveResult);
 opaque_struct!(ThreadCompactStartResult);
+opaque_struct!(ThreadBackgroundTerminalsCleanResult);
 opaque_struct!(ThreadSetNameResult);
 opaque_struct!(ThreadRollbackResult);
 opaque_struct!(ThreadReadResult);
+opaque_struct!(FuzzyFileSearchSessionStartResult);
+opaque_struct!(FuzzyFileSearchSessionUpdateResult);
+opaque_struct!(FuzzyFileSearchSessionStopResult);

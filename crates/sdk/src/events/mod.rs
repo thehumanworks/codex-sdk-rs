@@ -42,10 +42,13 @@ pub enum ServerNotification {
     DeprecationNotice(n::DeprecationNoticeNotification),
     ConfigWarning(n::ConfigWarningNotification),
     WindowsWorldWritableWarning(n::WindowsWorldWritableWarningNotification),
+    WindowsSandboxSetupCompleted(n::WindowsSandboxSetupCompletedNotification),
     AccountLoginCompleted(n::AccountLoginCompletedNotification),
     AuthStatusChange(n::AuthStatusChangeNotification),
     LoginChatGptComplete(n::LoginChatGptCompleteNotification),
     SessionConfigured(n::SessionConfiguredNotification),
+    FuzzyFileSearchSessionUpdated(n::FuzzyFileSearchSessionUpdatedNotification),
+    FuzzyFileSearchSessionCompleted(n::FuzzyFileSearchSessionCompletedNotification),
     Unknown { method: String, params: Value },
 }
 
@@ -141,10 +144,19 @@ pub fn parse_notification(
         "windows/worldWritableWarning" => {
             ServerNotification::WindowsWorldWritableWarning(decode(params)?)
         }
+        "windowsSandbox/setupCompleted" => {
+            ServerNotification::WindowsSandboxSetupCompleted(decode(params)?)
+        }
         "account/login/completed" => ServerNotification::AccountLoginCompleted(decode(params)?),
         "authStatusChange" => ServerNotification::AuthStatusChange(decode(params)?),
         "loginChatGptComplete" => ServerNotification::LoginChatGptComplete(decode(params)?),
         "sessionConfigured" => ServerNotification::SessionConfigured(decode(params)?),
+        "fuzzyFileSearch/sessionUpdated" => {
+            ServerNotification::FuzzyFileSearchSessionUpdated(decode(params)?)
+        }
+        "fuzzyFileSearch/sessionCompleted" => {
+            ServerNotification::FuzzyFileSearchSessionCompleted(decode(params)?)
+        }
         _ => ServerNotification::Unknown { method, params },
     };
     Ok(event)

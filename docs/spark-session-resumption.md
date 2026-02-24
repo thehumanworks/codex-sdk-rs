@@ -50,3 +50,4 @@ cargo run -p spark -- --final-response --resume thread_123 "Give me the final an
 
 - `--continue` fails with a clear error when no recorded sessions exist yet.
 - `--resume` fails if the supplied session id does not exist or cannot be loaded.
+- Resume flows apply the same optional thread configuration flags as fresh runs (for example `--model`, `--approval-policy`, `--sandbox`, `--config`, and instruction overrides).

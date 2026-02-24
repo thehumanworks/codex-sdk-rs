@@ -28,7 +28,7 @@
 - `cargo test -p spark --test integration_spark -- --nocapture`: real `spark` CLI tests (resume/continue flows).
 - `cargo run -p codex-app-server-sdk --example raw_fallback`: raw RPC smoke test.
 - `cargo run -p codex-app-server-sdk --example turn_start_stream`: live turn streaming test.
-- `cargo run -p spark -- "..."`: one-shot run (streamed by default) with fixed `gpt-5.3-codex-spark` + `xhigh`.
+- `cargo run -p spark -- "..."`: one-shot run (streamed by default) with defaults `gpt-5.3-codex-spark` + `xhigh` (override via flags).
 - `cargo run -p spark -- --stdio "..."`: one-shot run over stdio transport instead of default websocket.
 - `cargo run -p spark -- --cwd <path> "..."`: one-shot run with explicit Codex working directory.
 - `cargo run -p spark -- --final-response "..."`: one-shot run that only prints final response content.
@@ -133,7 +133,7 @@
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
 - Use `TurnOptions::builder()` for per-turn control and overrides; it covers `output_schema` plus per-turn `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox policy, collaboration mode, and raw extra fields.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
-- The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and always pins model + reasoning (`gpt-5.3-codex-spark`, `xhigh`).
+- The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and defaults model + reasoning to (`gpt-5.3-codex-spark`, `xhigh`) while allowing optional overrides (`--model`, `--reasoning-effort`, and related config flags).
 - `spark --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
 - On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run -p spark -- ...` or `./target/release/spark ...` to run the repository binary.
 

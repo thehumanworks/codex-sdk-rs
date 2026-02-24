@@ -105,12 +105,63 @@ pub struct ThreadStartParams {
     pub extra: serde_json::Map<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadResumeParams {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub developer_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personality: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist_extended_history: Option<bool>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadIdParams {
     pub thread_id: String,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
+}
+
+impl ThreadResumeParams {
+    pub fn from_thread_id(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl From<ThreadIdParams> for ThreadResumeParams {
+    fn from(value: ThreadIdParams) -> Self {
+        Self {
+            thread_id: value.thread_id,
+            extra: value.extra,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +188,14 @@ pub struct ThreadSetNameParams {
 pub struct ThreadRollbackParams {
     pub thread_id: String,
     pub count: u32,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadBackgroundTerminalsCleanParams {
+    pub thread_id: String,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -281,13 +340,19 @@ opaque_struct!(AppsListParams);
 opaque_struct!(ReviewStartParams);
 opaque_struct!(ModelListParams);
 opaque_struct!(ExperimentalFeatureListParams);
+opaque_struct!(CollaborationModeListParams);
+opaque_struct!(MockExperimentalMethodParams);
 opaque_struct!(McpServerOauthLoginParams);
 opaque_struct!(ListMcpServerStatusParams);
+opaque_struct!(WindowsSandboxSetupStartParams);
 opaque_struct!(FeedbackUploadParams);
 opaque_struct!(CommandExecParams);
 opaque_struct!(ConfigReadParams);
 opaque_struct!(ConfigValueWriteParams);
 opaque_struct!(ConfigBatchWriteParams);
+opaque_struct!(FuzzyFileSearchSessionStartParams);
+opaque_struct!(FuzzyFileSearchSessionUpdateParams);
+opaque_struct!(FuzzyFileSearchSessionStopParams);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -333,7 +398,6 @@ pub struct GetAccountParams {
     pub extra: serde_json::Map<String, Value>,
 }
 
-pub type ThreadResumeParams = ThreadIdParams;
 pub type ThreadArchiveParams = ThreadIdParams;
 pub type ThreadUnarchiveParams = ThreadIdParams;
 pub type ThreadCompactStartParams = ThreadIdParams;

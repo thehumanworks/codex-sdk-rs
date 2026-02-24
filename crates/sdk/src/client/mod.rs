@@ -532,6 +532,12 @@ impl CodexClient {
         responses::ThreadCompactStartResult
     );
     typed_method!(
+        thread_background_terminals_clean,
+        "thread/backgroundTerminals/clean",
+        requests::ThreadBackgroundTerminalsCleanParams,
+        responses::ThreadBackgroundTerminalsCleanResult
+    );
+    typed_method!(
         thread_rollback,
         "thread/rollback",
         requests::ThreadRollbackParams,
@@ -562,14 +568,14 @@ impl CodexClient {
         responses::SkillsListResult
     );
     typed_method!(
-        skills_remote_read,
-        "skills/remote/read",
+        skills_remote_list,
+        "skills/remote/list",
         requests::SkillsRemoteReadParams,
         responses::SkillsRemoteReadResult
     );
     typed_method!(
-        skills_remote_write,
-        "skills/remote/write",
+        skills_remote_export,
+        "skills/remote/export",
         requests::SkillsRemoteWriteParams,
         responses::SkillsRemoteWriteResult
     );
@@ -622,6 +628,18 @@ impl CodexClient {
         responses::ExperimentalFeatureListResult
     );
     typed_method!(
+        collaboration_mode_list,
+        "collaborationMode/list",
+        requests::CollaborationModeListParams,
+        responses::CollaborationModeListResult
+    );
+    typed_method!(
+        mock_experimental_method,
+        "mock/experimentalMethod",
+        requests::MockExperimentalMethodParams,
+        responses::MockExperimentalMethodResult
+    );
+    typed_method!(
         mcp_server_oauth_login,
         "mcpServer/oauth/login",
         requests::McpServerOauthLoginParams,
@@ -632,6 +650,12 @@ impl CodexClient {
         "mcpServerStatus/list",
         requests::ListMcpServerStatusParams,
         responses::McpServerStatusListResult
+    );
+    typed_method!(
+        windows_sandbox_setup_start,
+        "windowsSandbox/setupStart",
+        requests::WindowsSandboxSetupStartParams,
+        responses::WindowsSandboxSetupStartResult
     );
     typed_method!(
         account_login_start,
@@ -681,6 +705,39 @@ impl CodexClient {
         requests::GetAccountParams,
         responses::GetAccountResult
     );
+    typed_method!(
+        fuzzy_file_search_session_start,
+        "fuzzyFileSearch/sessionStart",
+        requests::FuzzyFileSearchSessionStartParams,
+        responses::FuzzyFileSearchSessionStartResult
+    );
+    typed_method!(
+        fuzzy_file_search_session_update,
+        "fuzzyFileSearch/sessionUpdate",
+        requests::FuzzyFileSearchSessionUpdateParams,
+        responses::FuzzyFileSearchSessionUpdateResult
+    );
+    typed_method!(
+        fuzzy_file_search_session_stop,
+        "fuzzyFileSearch/sessionStop",
+        requests::FuzzyFileSearchSessionStopParams,
+        responses::FuzzyFileSearchSessionStopResult
+    );
+
+    // Backward-compatible aliases for previous method names.
+    pub async fn skills_remote_read(
+        &self,
+        params: requests::SkillsRemoteReadParams,
+    ) -> Result<responses::SkillsRemoteReadResult, ClientError> {
+        self.skills_remote_list(params).await
+    }
+
+    pub async fn skills_remote_write(
+        &self,
+        params: requests::SkillsRemoteWriteParams,
+    ) -> Result<responses::SkillsRemoteWriteResult, ClientError> {
+        self.skills_remote_export(params).await
+    }
 
     typed_null_method!(
         config_mcp_server_reload,

@@ -190,7 +190,7 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## Full Typed RPC Coverage
 
-`Codex` now forwards the full typed client RPC surface after handshake initialization, including thread lifecycle operations, turn controls, auth/config methods, skills/MCP/review APIs, and typed null-parameter methods.
+`Codex` now forwards the full typed client RPC surface after handshake initialization, including thread lifecycle operations (with resume overrides), turn controls, auth/config methods, skills/MCP/review APIs, collaboration mode listing, background-terminal cleanup, windows sandbox setup start, fuzzy file search session controls, and typed null-parameter methods.
 
 ## Examples
 
@@ -200,6 +200,7 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `crates/sdk/examples/ws_persistent.rs`
 - `crates/sdk/examples/high_level_run.rs`
 - `crates/sdk/examples/high_level_streamed.rs`
+- `crates/sdk/examples/high_level_resume.rs`
 - `crates/sdk/examples/high_level_output_schema.rs`
 
 ## `spark` CLI
@@ -241,14 +242,38 @@ Resume a specific session id:
 cargo run -p spark -- --resume thread_123 "Continue from that session."
 ```
 
-`spark` always uses:
+`spark` defaults to:
 
-- model: `gpt-5.3-codex-spark`
-- reasoning effort: `xhigh`
-- websocket transport by default (`ws://127.0.0.1:4222`), unless `--stdio` is provided
+- model: `gpt-5.3-codex-spark` (override: `--model`)
+- reasoning effort: `xhigh` (override: `--reasoning-effort`)
+- websocket transport (`ws://127.0.0.1:4222`) unless `--stdio` is provided
 - Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
 - each completed `agentMessage` is newline-terminated so consecutive messages do not run together
 - `--continue` and `--resume <session_id>` are mutually exclusive
+- transport initialization is started early and overlapped with prompt/config resolution to reduce first-message latency
+
+Additional optional config flags:
+
+- transport/session: `--ws-url`, `--stdio`, `--continue`, `--resume`
+- model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`
+- policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--skip-git-repo-check`, `--ephemeral`
+- network/search: `--network-access-enabled|--network-access-disabled`, `--web-search-mode`, `--web-search-enabled|--web-search-disabled`
+- instructions/personality: `--agent`, `--base-instructions`, `--developer-instructions`, `--personality`
+- config/schema: `--config`, `--config-json`, `--output-schema-json`, `--output-schema-file`, `--turn-extra-json`
+
+Example with explicit overrides:
+
+```bash
+cargo run -p spark -- \
+  --model gpt-5.3-codex \
+  --reasoning-effort high \
+  --approval-policy on-request \
+  --sandbox workspace-write \
+  --web-search-mode live \
+  --config 'sandbox_workspace_write.network_access=true' \
+  --output-schema-json '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}' \
+  "Return JSON with an answer field."
+```
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/config.toml` under `[agents.<name>]`.
 When `--stdio` is used, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.

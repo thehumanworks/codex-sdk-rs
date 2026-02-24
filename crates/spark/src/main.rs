@@ -6,13 +6,13 @@ use std::process::Command;
 use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
-    Codex, ModelReasoningEffort, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError,
-    TurnOptions,
+    ApprovalMode, Codex, ModelReasoningEffort, ModelReasoningSummary, Personality, SandboxMode,
+    ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions, WebSearchMode,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use thiserror::Error;
 
 const APP_NAME: &str = "spark";
@@ -22,24 +22,50 @@ const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 
 const USAGE: &str = "\
-Usage: spark [--agent NAME] [--cwd PATH] [--final-response] [--stdio] [-c | -r SESSION_ID] [PROMPT...]
+Usage: spark [OPTIONS] [PROMPT...]
 
 Runs one turn with:
-  model: gpt-5.3-codex-spark
-  reasoning effort: xhigh
-  transport: websocket (default, ws://127.0.0.1:4222)
+  model default: gpt-5.3-codex-spark
+  reasoning effort default: xhigh
+  transport default: websocket (ws://127.0.0.1:4222)
 
 Options:
-  --agent NAME    Load ~/.codex/config.toml [agents.NAME]
-  --cwd PATH      Set Codex working directory (default: current shell directory)
-  --stdio        Use app-server stdio transport instead of websocket default
+  --agent NAME                     Load ~/.codex/config.toml [agents.NAME]
+  --cwd PATH                       Set Codex working directory (default: current shell directory)
+  --ws-url URL                     Set websocket URL (default: ws://127.0.0.1:4222)
+  --stdio                          Use app-server stdio transport instead of websocket
+  --model MODEL                    Override model (default: gpt-5.3-codex-spark)
+  --model-provider PROVIDER        Override model provider
+  --reasoning-effort LEVEL         Override reasoning effort: none|minimal|low|medium|high|xhigh
+  --reasoning-summary MODE         Override reasoning summary: none|auto|concise|detailed
+  --approval-policy MODE           Set approval policy: never|on-request|on-failure|untrusted
+  --sandbox MODE                   Set sandbox mode: read-only|workspace-write|danger-full-access
+  --sandbox-policy-json JSON       Set sandbox policy JSON payload
+  --skip-git-repo-check            Allow running outside a Git repository
+  --network-access-enabled         Force network access enabled
+  --network-access-disabled        Force network access disabled
+  --web-search-mode MODE           Set web search mode: disabled|cached|live
+  --web-search-enabled             Force web search enabled
+  --web-search-disabled            Force web search disabled
+  --add-dir PATH                   Additional writable directory (repeatable)
+  --personality MODE               Set personality: none|friendly|pragmatic
+  --base-instructions TEXT         Set base instructions
+  --developer-instructions TEXT    Set developer instructions (overrides --agent instructions)
+  --ephemeral                      Run without persisting session files
+  --experimental-raw-events        Enable raw response item events
+  --persist-extended-history       Persist extended history for resume/fork/read
+  --config KEY=VALUE               Set config override (VALUE parsed as JSON when valid)
+  --config-json JSON               Merge config object JSON into thread config
+  --output-schema-json JSON        Set turn output schema JSON
+  --output-schema-file PATH        Load turn output schema JSON from file
+  --turn-extra-json JSON           Merge object JSON into turn/start raw extras
   -c, --continue
-                 Resume the most recent recorded session (codex resume --last equivalent)
+                                  Resume the most recent recorded session
   -r, --resume ID
-                 Resume the specified session id
+                                  Resume the specified session id
   --final-response
-                 Output only the final message text (no streamed deltas)
-  -h, --help      Show this help
+                                  Output only the final message text (no streamed deltas)
+  -h, --help                       Show this help
 
 If PROMPT is omitted, spark reads the prompt from stdin.
 ";
@@ -60,6 +86,30 @@ enum TransportMode {
 struct CliArgs {
     agent: Option<String>,
     working_directory: Option<String>,
+    websocket_url: Option<String>,
+    model: Option<String>,
+    model_provider: Option<String>,
+    reasoning_effort: Option<ModelReasoningEffort>,
+    reasoning_summary: Option<ModelReasoningSummary>,
+    approval_policy: Option<ApprovalMode>,
+    sandbox_mode: Option<SandboxMode>,
+    sandbox_policy_json: Option<String>,
+    skip_git_repo_check: Option<bool>,
+    network_access_enabled: Option<bool>,
+    web_search_mode: Option<WebSearchMode>,
+    web_search_enabled: Option<bool>,
+    additional_directories: Vec<String>,
+    personality: Option<Personality>,
+    base_instructions: Option<String>,
+    developer_instructions: Option<String>,
+    ephemeral: Option<bool>,
+    experimental_raw_events: Option<bool>,
+    persist_extended_history: Option<bool>,
+    config_entries: Vec<String>,
+    config_json: Option<String>,
+    output_schema_json: Option<String>,
+    output_schema_file: Option<String>,
+    turn_extra_json: Option<String>,
     resume_target: Option<ResumeTarget>,
     final_response_only: bool,
     transport_mode: TransportMode,
@@ -148,32 +198,170 @@ async fn run() -> Result<(), SparkError> {
     let CliArgs {
         agent,
         working_directory,
+        websocket_url,
+        model,
+        model_provider,
+        reasoning_effort,
+        reasoning_summary,
+        approval_policy,
+        sandbox_mode,
+        sandbox_policy_json,
+        skip_git_repo_check,
+        network_access_enabled,
+        web_search_mode,
+        web_search_enabled,
+        additional_directories,
+        personality,
+        base_instructions,
+        developer_instructions,
+        ephemeral,
+        experimental_raw_events,
+        persist_extended_history,
+        config_entries,
+        config_json,
+        output_schema_json,
+        output_schema_file,
+        turn_extra_json,
         resume_target,
         final_response_only,
         transport_mode,
         prompt_parts,
     } = cli;
 
-    let prompt = resolve_prompt(prompt_parts)?;
+    let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
+    let connect_task = tokio::spawn(async move {
+        match transport_mode {
+            TransportMode::WebSocket => connect_ws_codex(&websocket_url).await,
+            TransportMode::Stdio => spawn_stdio_codex().await,
+        }
+    });
+
+    let prompt = match resolve_prompt(prompt_parts) {
+        Ok(prompt) => prompt,
+        Err(err) => {
+            connect_task.abort();
+            return Err(err);
+        }
+    };
     let working_directory = match working_directory {
         Some(path) => path,
-        None => resolve_current_working_directory()?,
+        None => match resolve_current_working_directory() {
+            Ok(path) => path,
+            Err(err) => {
+                connect_task.abort();
+                return Err(err);
+            }
+        },
+    };
+    let thread_config = match build_thread_config(config_json, config_entries) {
+        Ok(config) => config,
+        Err(err) => {
+            connect_task.abort();
+            return Err(err);
+        }
+    };
+    let sandbox_policy =
+        match parse_optional_json_value(sandbox_policy_json, "--sandbox-policy-json") {
+            Ok(value) => value,
+            Err(err) => {
+                connect_task.abort();
+                return Err(err);
+            }
+        };
+    let output_schema = match resolve_output_schema(output_schema_json, output_schema_file) {
+        Ok(schema) => schema,
+        Err(err) => {
+            connect_task.abort();
+            return Err(err);
+        }
+    };
+    let turn_extra = match parse_optional_json_object(turn_extra_json, "--turn-extra-json") {
+        Ok(extra) => extra,
+        Err(err) => {
+            connect_task.abort();
+            return Err(err);
+        }
     };
 
     let mut thread_options = ThreadOptions::builder()
-        .model(MODEL)
-        .model_reasoning_effort(ModelReasoningEffort::XHigh)
+        .model(model.unwrap_or_else(|| MODEL.to_string()))
+        .model_reasoning_effort(reasoning_effort.unwrap_or(ModelReasoningEffort::XHigh))
         .working_directory(working_directory);
+    if let Some(model_provider) = model_provider {
+        thread_options = thread_options.model_provider(model_provider);
+    }
+    if let Some(reasoning_summary) = reasoning_summary {
+        thread_options = thread_options.model_reasoning_summary(reasoning_summary);
+    }
+    if let Some(approval_policy) = approval_policy {
+        thread_options = thread_options.approval_policy(approval_policy);
+    }
+    if let Some(sandbox_mode) = sandbox_mode {
+        thread_options = thread_options.sandbox_mode(sandbox_mode);
+    }
+    if let Some(sandbox_policy) = sandbox_policy {
+        thread_options = thread_options.sandbox_policy(sandbox_policy);
+    }
+    if let Some(skip_git_repo_check) = skip_git_repo_check {
+        thread_options = thread_options.skip_git_repo_check(skip_git_repo_check);
+    }
+    if let Some(network_access_enabled) = network_access_enabled {
+        thread_options = thread_options.network_access_enabled(network_access_enabled);
+    }
+    if let Some(web_search_mode) = web_search_mode {
+        thread_options = thread_options.web_search_mode(web_search_mode);
+    }
+    if let Some(web_search_enabled) = web_search_enabled {
+        thread_options = thread_options.web_search_enabled(web_search_enabled);
+    }
+    if !additional_directories.is_empty() {
+        thread_options = thread_options.additional_directories(additional_directories);
+    }
+    if let Some(personality) = personality {
+        thread_options = thread_options.personality(personality);
+    }
+    if let Some(base_instructions) = base_instructions {
+        thread_options = thread_options.base_instructions(base_instructions);
+    }
+    if let Some(ephemeral) = ephemeral {
+        thread_options = thread_options.ephemeral(ephemeral);
+    }
+    if let Some(config) = thread_config {
+        thread_options = thread_options.config(config);
+    }
+    if let Some(experimental_raw_events) = experimental_raw_events {
+        thread_options = thread_options.experimental_raw_events(experimental_raw_events);
+    }
+    if let Some(persist_extended_history) = persist_extended_history {
+        thread_options = thread_options.persist_extended_history(persist_extended_history);
+    }
     if let Some(agent_name) = agent {
-        let agent = load_agent_profile(&agent_name)?;
+        let agent = match load_agent_profile(&agent_name) {
+            Ok(agent) => agent,
+            Err(err) => {
+                connect_task.abort();
+                return Err(err);
+            }
+        };
         thread_options = thread_options.developer_instructions(agent.instructions);
     }
+    if let Some(developer_instructions) = developer_instructions {
+        thread_options = thread_options.developer_instructions(developer_instructions);
+    }
 
-    let codex = match transport_mode {
-        TransportMode::WebSocket => connect_default_ws_codex().await?,
-        TransportMode::Stdio => spawn_stdio_codex().await?,
-    };
+    let mut turn_options = TurnOptions::builder();
+    if let Some(output_schema) = output_schema {
+        turn_options = turn_options.output_schema(output_schema);
+    }
+    if let Some(turn_extra) = turn_extra {
+        turn_options = turn_options.extra(turn_extra);
+    }
+
+    let codex = connect_task
+        .await
+        .map_err(|error| SparkError::Config(format!("transport connect task failed: {error}")))??;
     let options = thread_options.build();
+    let turn_options = turn_options.build();
     let mut thread = match resume_target {
         Some(ResumeTarget::Last) => {
             let thread_id = resolve_last_session_id(&codex).await?;
@@ -184,7 +372,7 @@ async fn run() -> Result<(), SparkError> {
     };
 
     if final_response_only {
-        let final_response = thread.ask(prompt, TurnOptions::default()).await?;
+        let final_response = thread.ask(prompt, turn_options).await?;
         let mut stdout = io::stdout();
         let mut ended_with_newline = false;
 
@@ -200,7 +388,7 @@ async fn run() -> Result<(), SparkError> {
         return Ok(());
     }
 
-    let mut streamed = thread.run_streamed(prompt, TurnOptions::default()).await?;
+    let mut streamed = thread.run_streamed(prompt, turn_options).await?;
 
     let mut stdout = io::stdout();
     let mut saw_terminal = false;
@@ -272,9 +460,9 @@ async fn run() -> Result<(), SparkError> {
     Ok(())
 }
 
-async fn connect_default_ws_codex() -> Result<Codex, SparkError> {
+async fn connect_ws_codex(url: &str) -> Result<Codex, SparkError> {
     let client = CodexClient::connect_ws(WsConfig {
-        url: DEFAULT_WS_URL.to_string(),
+        url: url.to_string(),
         env: Default::default(),
         options: ClientOptions::default(),
     })
@@ -426,6 +614,30 @@ fn ensure_message_separator<W: Write>(
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
     let mut agent: Option<String> = None;
     let mut working_directory: Option<String> = None;
+    let mut websocket_url: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut model_provider: Option<String> = None;
+    let mut reasoning_effort: Option<ModelReasoningEffort> = None;
+    let mut reasoning_summary: Option<ModelReasoningSummary> = None;
+    let mut approval_policy: Option<ApprovalMode> = None;
+    let mut sandbox_mode: Option<SandboxMode> = None;
+    let mut sandbox_policy_json: Option<String> = None;
+    let mut skip_git_repo_check: Option<bool> = None;
+    let mut network_access_enabled: Option<bool> = None;
+    let mut web_search_mode: Option<WebSearchMode> = None;
+    let mut web_search_enabled: Option<bool> = None;
+    let mut additional_directories = Vec::new();
+    let mut personality: Option<Personality> = None;
+    let mut base_instructions: Option<String> = None;
+    let mut developer_instructions: Option<String> = None;
+    let mut ephemeral: Option<bool> = None;
+    let mut experimental_raw_events: Option<bool> = None;
+    let mut persist_extended_history: Option<bool> = None;
+    let mut config_entries = Vec::new();
+    let mut config_json: Option<String> = None;
+    let mut output_schema_json: Option<String> = None;
+    let mut output_schema_file: Option<String> = None;
+    let mut turn_extra_json: Option<String> = None;
     let mut resume_target: Option<ResumeTarget> = None;
     let mut final_response_only = false;
     let mut transport_mode = TransportMode::WebSocket;
@@ -495,6 +707,300 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 set_working_directory(&mut working_directory, raw)?;
                 continue;
             }
+            if arg == "--ws-url" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --ws-url".to_string()))?;
+                set_string_option_once(&mut websocket_url, &raw, "--ws-url")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--ws-url=") {
+                set_string_option_once(&mut websocket_url, raw, "--ws-url")?;
+                continue;
+            }
+            if arg == "--model" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --model".to_string()))?;
+                set_string_option_once(&mut model, &raw, "--model")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--model=") {
+                set_string_option_once(&mut model, raw, "--model")?;
+                continue;
+            }
+            if arg == "--model-provider" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --model-provider".to_string())
+                })?;
+                set_string_option_once(&mut model_provider, &raw, "--model-provider")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--model-provider=") {
+                set_string_option_once(&mut model_provider, raw, "--model-provider")?;
+                continue;
+            }
+            if arg == "--reasoning-effort" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --reasoning-effort".to_string())
+                })?;
+                set_option_once(
+                    &mut reasoning_effort,
+                    parse_reasoning_effort(&raw)?,
+                    "--reasoning-effort",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--reasoning-effort=") {
+                set_option_once(
+                    &mut reasoning_effort,
+                    parse_reasoning_effort(raw)?,
+                    "--reasoning-effort",
+                )?;
+                continue;
+            }
+            if arg == "--reasoning-summary" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --reasoning-summary".to_string())
+                })?;
+                set_option_once(
+                    &mut reasoning_summary,
+                    parse_reasoning_summary(&raw)?,
+                    "--reasoning-summary",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--reasoning-summary=") {
+                set_option_once(
+                    &mut reasoning_summary,
+                    parse_reasoning_summary(raw)?,
+                    "--reasoning-summary",
+                )?;
+                continue;
+            }
+            if arg == "--approval-policy" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --approval-policy".to_string())
+                })?;
+                set_option_once(
+                    &mut approval_policy,
+                    parse_approval_mode(&raw)?,
+                    "--approval-policy",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--approval-policy=") {
+                set_option_once(
+                    &mut approval_policy,
+                    parse_approval_mode(raw)?,
+                    "--approval-policy",
+                )?;
+                continue;
+            }
+            if arg == "--sandbox" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --sandbox".to_string()))?;
+                set_option_once(&mut sandbox_mode, parse_sandbox_mode(&raw)?, "--sandbox")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--sandbox=") {
+                set_option_once(&mut sandbox_mode, parse_sandbox_mode(raw)?, "--sandbox")?;
+                continue;
+            }
+            if arg == "--sandbox-policy-json" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --sandbox-policy-json".to_string())
+                })?;
+                set_string_option_once(&mut sandbox_policy_json, &raw, "--sandbox-policy-json")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--sandbox-policy-json=") {
+                set_string_option_once(&mut sandbox_policy_json, raw, "--sandbox-policy-json")?;
+                continue;
+            }
+            if arg == "--skip-git-repo-check" {
+                set_option_once(&mut skip_git_repo_check, true, "--skip-git-repo-check")?;
+                continue;
+            }
+            if arg == "--network-access-enabled" {
+                set_option_once(
+                    &mut network_access_enabled,
+                    true,
+                    "--network-access-enabled/--network-access-disabled",
+                )?;
+                continue;
+            }
+            if arg == "--network-access-disabled" {
+                set_option_once(
+                    &mut network_access_enabled,
+                    false,
+                    "--network-access-enabled/--network-access-disabled",
+                )?;
+                continue;
+            }
+            if arg == "--web-search-mode" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --web-search-mode".to_string())
+                })?;
+                set_option_once(
+                    &mut web_search_mode,
+                    parse_web_search_mode(&raw)?,
+                    "--web-search-mode",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--web-search-mode=") {
+                set_option_once(
+                    &mut web_search_mode,
+                    parse_web_search_mode(raw)?,
+                    "--web-search-mode",
+                )?;
+                continue;
+            }
+            if arg == "--web-search-enabled" {
+                set_option_once(
+                    &mut web_search_enabled,
+                    true,
+                    "--web-search-enabled/--web-search-disabled",
+                )?;
+                continue;
+            }
+            if arg == "--web-search-disabled" {
+                set_option_once(
+                    &mut web_search_enabled,
+                    false,
+                    "--web-search-enabled/--web-search-disabled",
+                )?;
+                continue;
+            }
+            if arg == "--add-dir" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --add-dir".to_string()))?;
+                additional_directories.push(normalize_working_directory(&raw)?);
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--add-dir=") {
+                additional_directories.push(normalize_working_directory(raw)?);
+                continue;
+            }
+            if arg == "--personality" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --personality".to_string())
+                })?;
+                set_option_once(&mut personality, parse_personality(&raw)?, "--personality")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--personality=") {
+                set_option_once(&mut personality, parse_personality(raw)?, "--personality")?;
+                continue;
+            }
+            if arg == "--base-instructions" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --base-instructions".to_string())
+                })?;
+                set_string_option_once(&mut base_instructions, &raw, "--base-instructions")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--base-instructions=") {
+                set_string_option_once(&mut base_instructions, raw, "--base-instructions")?;
+                continue;
+            }
+            if arg == "--developer-instructions" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --developer-instructions".to_string())
+                })?;
+                set_string_option_once(
+                    &mut developer_instructions,
+                    &raw,
+                    "--developer-instructions",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--developer-instructions=") {
+                set_string_option_once(
+                    &mut developer_instructions,
+                    raw,
+                    "--developer-instructions",
+                )?;
+                continue;
+            }
+            if arg == "--ephemeral" {
+                set_option_once(&mut ephemeral, true, "--ephemeral")?;
+                continue;
+            }
+            if arg == "--experimental-raw-events" {
+                set_option_once(
+                    &mut experimental_raw_events,
+                    true,
+                    "--experimental-raw-events",
+                )?;
+                continue;
+            }
+            if arg == "--persist-extended-history" {
+                set_option_once(
+                    &mut persist_extended_history,
+                    true,
+                    "--persist-extended-history",
+                )?;
+                continue;
+            }
+            if arg == "--config" {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| SparkError::Usage("missing value for --config".to_string()))?;
+                config_entries.push(raw);
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--config=") {
+                config_entries.push(raw.to_string());
+                continue;
+            }
+            if arg == "--config-json" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --config-json".to_string())
+                })?;
+                set_string_option_once(&mut config_json, &raw, "--config-json")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--config-json=") {
+                set_string_option_once(&mut config_json, raw, "--config-json")?;
+                continue;
+            }
+            if arg == "--output-schema-json" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --output-schema-json".to_string())
+                })?;
+                set_string_option_once(&mut output_schema_json, &raw, "--output-schema-json")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--output-schema-json=") {
+                set_string_option_once(&mut output_schema_json, raw, "--output-schema-json")?;
+                continue;
+            }
+            if arg == "--output-schema-file" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --output-schema-file".to_string())
+                })?;
+                set_string_option_once(&mut output_schema_file, &raw, "--output-schema-file")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--output-schema-file=") {
+                set_string_option_once(&mut output_schema_file, raw, "--output-schema-file")?;
+                continue;
+            }
+            if arg == "--turn-extra-json" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --turn-extra-json".to_string())
+                })?;
+                set_string_option_once(&mut turn_extra_json, &raw, "--turn-extra-json")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--turn-extra-json=") {
+                set_string_option_once(&mut turn_extra_json, raw, "--turn-extra-json")?;
+                continue;
+            }
             if arg == "--final-response" {
                 if final_response_only {
                     return Err(SparkError::Usage(
@@ -521,9 +1027,45 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         prompt_parts.push(arg);
     }
 
+    if transport_mode == TransportMode::Stdio && websocket_url.is_some() {
+        return Err(SparkError::Usage(
+            "--ws-url cannot be used with --stdio".to_string(),
+        ));
+    }
+
+    if output_schema_json.is_some() && output_schema_file.is_some() {
+        return Err(SparkError::Usage(
+            "only one of --output-schema-json and --output-schema-file may be provided".to_string(),
+        ));
+    }
+
     Ok(ParsedCommand::Run(CliArgs {
         agent,
         working_directory,
+        websocket_url,
+        model,
+        model_provider,
+        reasoning_effort,
+        reasoning_summary,
+        approval_policy,
+        sandbox_mode,
+        sandbox_policy_json,
+        skip_git_repo_check,
+        network_access_enabled,
+        web_search_mode,
+        web_search_enabled,
+        additional_directories,
+        personality,
+        base_instructions,
+        developer_instructions,
+        ephemeral,
+        experimental_raw_events,
+        persist_extended_history,
+        config_entries,
+        config_json,
+        output_schema_json,
+        output_schema_file,
+        turn_extra_json,
         resume_target,
         final_response_only,
         transport_mode,
@@ -552,6 +1094,196 @@ fn set_resume_target(
     }
     *slot = Some(target);
     Ok(())
+}
+
+fn set_option_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), SparkError> {
+    if slot.is_some() {
+        return Err(SparkError::Usage(format!(
+            "{flag} may only be provided once"
+        )));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn set_string_option_once(
+    slot: &mut Option<String>,
+    raw: &str,
+    flag: &str,
+) -> Result<(), SparkError> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(SparkError::Usage(format!(
+            "value for {flag} cannot be empty"
+        )));
+    }
+    set_option_once(slot, value.to_string(), flag)
+}
+
+fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, SparkError> {
+    match raw.trim() {
+        "none" => Ok(ModelReasoningEffort::None),
+        "minimal" => Ok(ModelReasoningEffort::Minimal),
+        "low" => Ok(ModelReasoningEffort::Low),
+        "medium" => Ok(ModelReasoningEffort::Medium),
+        "high" => Ok(ModelReasoningEffort::High),
+        "xhigh" => Ok(ModelReasoningEffort::XHigh),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --reasoning-effort '{raw}'; expected one of: none, minimal, low, medium, high, xhigh"
+        ))),
+    }
+}
+
+fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, SparkError> {
+    match raw.trim() {
+        "none" => Ok(ModelReasoningSummary::None),
+        "auto" => Ok(ModelReasoningSummary::Auto),
+        "concise" => Ok(ModelReasoningSummary::Concise),
+        "detailed" => Ok(ModelReasoningSummary::Detailed),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --reasoning-summary '{raw}'; expected one of: none, auto, concise, detailed"
+        ))),
+    }
+}
+
+fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, SparkError> {
+    match raw.trim() {
+        "never" => Ok(ApprovalMode::Never),
+        "on-request" => Ok(ApprovalMode::OnRequest),
+        "on-failure" => Ok(ApprovalMode::OnFailure),
+        "untrusted" => Ok(ApprovalMode::Untrusted),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --approval-policy '{raw}'; expected one of: never, on-request, on-failure, untrusted"
+        ))),
+    }
+}
+
+fn parse_sandbox_mode(raw: &str) -> Result<SandboxMode, SparkError> {
+    match raw.trim() {
+        "read-only" => Ok(SandboxMode::ReadOnly),
+        "workspace-write" => Ok(SandboxMode::WorkspaceWrite),
+        "danger-full-access" => Ok(SandboxMode::DangerFullAccess),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --sandbox '{raw}'; expected one of: read-only, workspace-write, danger-full-access"
+        ))),
+    }
+}
+
+fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, SparkError> {
+    match raw.trim() {
+        "disabled" => Ok(WebSearchMode::Disabled),
+        "cached" => Ok(WebSearchMode::Cached),
+        "live" => Ok(WebSearchMode::Live),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --web-search-mode '{raw}'; expected one of: disabled, cached, live"
+        ))),
+    }
+}
+
+fn parse_personality(raw: &str) -> Result<Personality, SparkError> {
+    match raw.trim() {
+        "none" => Ok(Personality::None),
+        "friendly" => Ok(Personality::Friendly),
+        "pragmatic" => Ok(Personality::Pragmatic),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --personality '{raw}'; expected one of: none, friendly, pragmatic"
+        ))),
+    }
+}
+
+fn parse_json_value(raw: &str, flag: &str) -> Result<Value, SparkError> {
+    serde_json::from_str(raw)
+        .map_err(|error| SparkError::Usage(format!("failed to parse JSON for {flag}: {error}")))
+}
+
+fn parse_optional_json_value(raw: Option<String>, flag: &str) -> Result<Option<Value>, SparkError> {
+    raw.map(|value| parse_json_value(&value, flag)).transpose()
+}
+
+fn parse_optional_json_object(
+    raw: Option<String>,
+    flag: &str,
+) -> Result<Option<Map<String, Value>>, SparkError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let value = parse_json_value(&raw, flag)?;
+    match value {
+        Value::Object(object) => Ok(Some(object)),
+        _ => Err(SparkError::Usage(format!("{flag} must be a JSON object"))),
+    }
+}
+
+fn build_thread_config(
+    config_json: Option<String>,
+    config_entries: Vec<String>,
+) -> Result<Option<Map<String, Value>>, SparkError> {
+    let mut config = parse_optional_json_object(config_json, "--config-json")?.unwrap_or_default();
+
+    for entry in config_entries {
+        let Some((raw_key, raw_value)) = entry.split_once('=') else {
+            return Err(SparkError::Usage(
+                "invalid --config entry; expected KEY=VALUE".to_string(),
+            ));
+        };
+
+        let key = raw_key.trim();
+        if key.is_empty() {
+            return Err(SparkError::Usage(
+                "invalid --config entry; key cannot be empty".to_string(),
+            ));
+        }
+
+        let value = raw_value.trim();
+        if value.is_empty() {
+            return Err(SparkError::Usage(format!(
+                "invalid --config entry for key '{key}'; value cannot be empty"
+            )));
+        }
+
+        let parsed = serde_json::from_str::<Value>(value)
+            .unwrap_or_else(|_| Value::String(value.to_string()));
+        config.insert(key.to_string(), parsed);
+    }
+
+    if config.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(config))
+    }
+}
+
+fn resolve_output_schema(
+    output_schema_json: Option<String>,
+    output_schema_file: Option<String>,
+) -> Result<Option<Value>, SparkError> {
+    if let Some(raw) = output_schema_json {
+        return Ok(Some(parse_json_value(&raw, "--output-schema-json")?));
+    }
+
+    let Some(path) = output_schema_file else {
+        return Ok(None);
+    };
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(SparkError::Usage(
+            "value for --output-schema-file cannot be empty".to_string(),
+        ));
+    }
+    let schema_path = PathBuf::from(path);
+    let raw = fs::read_to_string(&schema_path).map_err(|error| {
+        SparkError::Config(format!(
+            "failed to read output schema file {}: {error}",
+            schema_path.display()
+        ))
+    })?;
+    let schema = serde_json::from_str::<Value>(&raw).map_err(|error| {
+        SparkError::Usage(format!(
+            "failed to parse JSON in output schema file {}: {error}",
+            schema_path.display()
+        ))
+    })?;
+    Ok(Some(schema))
 }
 
 fn normalize_session_id(raw: &str) -> Result<String, SparkError> {
@@ -1000,6 +1732,85 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_args_supports_extended_configuration_flags() {
+        let parsed = parse_cli_args(
+            vec![
+                "--ws-url=ws://127.0.0.1:9999".to_string(),
+                "--model".to_string(),
+                "gpt-5-custom".to_string(),
+                "--model-provider".to_string(),
+                "sandboxed-provider".to_string(),
+                "--reasoning-effort=high".to_string(),
+                "--reasoning-summary=detailed".to_string(),
+                "--approval-policy=on-failure".to_string(),
+                "--sandbox=workspace-write".to_string(),
+                "--sandbox-policy-json".to_string(),
+                "{\"type\":\"workspaceWrite\"}".to_string(),
+                "--skip-git-repo-check".to_string(),
+                "--network-access-disabled".to_string(),
+                "--web-search-mode=live".to_string(),
+                "--web-search-enabled".to_string(),
+                "--add-dir".to_string(),
+                "/tmp/one".to_string(),
+                "--add-dir=/tmp/two".to_string(),
+                "--personality=pragmatic".to_string(),
+                "--base-instructions".to_string(),
+                "base rules".to_string(),
+                "--developer-instructions".to_string(),
+                "dev rules".to_string(),
+                "--ephemeral".to_string(),
+                "--experimental-raw-events".to_string(),
+                "--persist-extended-history".to_string(),
+                "--config".to_string(),
+                "feature.enabled=true".to_string(),
+                "--config-json={\"provider\":\"local\"}".to_string(),
+                "--output-schema-json={\"type\":\"object\"}".to_string(),
+                "--turn-extra-json={\"customTurnFlag\":true}".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
+
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.websocket_url.as_deref(), Some("ws://127.0.0.1:9999"));
+        assert_eq!(cli.model.as_deref(), Some("gpt-5-custom"));
+        assert_eq!(cli.model_provider.as_deref(), Some("sandboxed-provider"));
+        assert_eq!(cli.reasoning_effort, Some(ModelReasoningEffort::High));
+        assert_eq!(cli.reasoning_summary, Some(ModelReasoningSummary::Detailed));
+        assert_eq!(cli.approval_policy, Some(ApprovalMode::OnFailure));
+        assert_eq!(cli.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
+        assert_eq!(
+            cli.sandbox_policy_json.as_deref(),
+            Some("{\"type\":\"workspaceWrite\"}")
+        );
+        assert_eq!(cli.skip_git_repo_check, Some(true));
+        assert_eq!(cli.network_access_enabled, Some(false));
+        assert_eq!(cli.web_search_mode, Some(WebSearchMode::Live));
+        assert_eq!(cli.web_search_enabled, Some(true));
+        assert_eq!(cli.additional_directories, vec!["/tmp/one", "/tmp/two"]);
+        assert_eq!(cli.personality, Some(Personality::Pragmatic));
+        assert_eq!(cli.base_instructions.as_deref(), Some("base rules"));
+        assert_eq!(cli.developer_instructions.as_deref(), Some("dev rules"));
+        assert_eq!(cli.ephemeral, Some(true));
+        assert_eq!(cli.experimental_raw_events, Some(true));
+        assert_eq!(cli.persist_extended_history, Some(true));
+        assert_eq!(cli.config_entries, vec!["feature.enabled=true"]);
+        assert_eq!(cli.config_json.as_deref(), Some("{\"provider\":\"local\"}"));
+        assert_eq!(
+            cli.output_schema_json.as_deref(),
+            Some("{\"type\":\"object\"}")
+        );
+        assert_eq!(
+            cli.turn_extra_json.as_deref(),
+            Some("{\"customTurnFlag\":true}")
+        );
+    }
+
+    #[test]
     fn parse_cli_args_rejects_missing_resume_value() {
         let error = parse_cli_args(vec!["--resume".to_string()].into_iter())
             .expect_err("missing --resume value");
@@ -1037,6 +1848,36 @@ mod tests {
     fn parse_cli_args_rejects_duplicate_stdio_flag() {
         let error = parse_cli_args(vec!["--stdio".to_string(), "--stdio".to_string()].into_iter())
             .expect_err("duplicate stdio");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_ws_url_with_stdio() {
+        let error = parse_cli_args(
+            vec![
+                "--stdio".to_string(),
+                "--ws-url".to_string(),
+                "ws://127.0.0.1:9000".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("ws-url should conflict with stdio");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_multiple_output_schema_sources() {
+        let error = parse_cli_args(
+            vec![
+                "--output-schema-json={\"type\":\"object\"}".to_string(),
+                "--output-schema-file".to_string(),
+                "/tmp/schema.json".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("output schema source conflict");
         assert!(matches!(error, SparkError::Usage(_)));
     }
 

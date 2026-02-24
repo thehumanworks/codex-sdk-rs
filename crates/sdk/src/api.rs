@@ -957,6 +957,11 @@ impl Codex {
         responses::ThreadCompactStartResult
     );
     codex_forward_typed_method!(
+        thread_background_terminals_clean,
+        requests::ThreadBackgroundTerminalsCleanParams,
+        responses::ThreadBackgroundTerminalsCleanResult
+    );
+    codex_forward_typed_method!(
         thread_rollback,
         requests::ThreadRollbackParams,
         responses::ThreadRollbackResult
@@ -977,12 +982,12 @@ impl Codex {
         responses::SkillsListResult
     );
     codex_forward_typed_method!(
-        skills_remote_read,
+        skills_remote_list,
         requests::SkillsRemoteReadParams,
         responses::SkillsRemoteReadResult
     );
     codex_forward_typed_method!(
-        skills_remote_write,
+        skills_remote_export,
         requests::SkillsRemoteWriteParams,
         responses::SkillsRemoteWriteResult
     );
@@ -1019,6 +1024,16 @@ impl Codex {
         responses::ExperimentalFeatureListResult
     );
     codex_forward_typed_method!(
+        collaboration_mode_list,
+        requests::CollaborationModeListParams,
+        responses::CollaborationModeListResult
+    );
+    codex_forward_typed_method!(
+        mock_experimental_method,
+        requests::MockExperimentalMethodParams,
+        responses::MockExperimentalMethodResult
+    );
+    codex_forward_typed_method!(
         mcp_server_oauth_login,
         requests::McpServerOauthLoginParams,
         responses::McpServerOauthLoginResult
@@ -1027,6 +1042,11 @@ impl Codex {
         mcp_server_status_list,
         requests::ListMcpServerStatusParams,
         responses::McpServerStatusListResult
+    );
+    codex_forward_typed_method!(
+        windows_sandbox_setup_start,
+        requests::WindowsSandboxSetupStartParams,
+        responses::WindowsSandboxSetupStartResult
     );
     codex_forward_typed_method!(
         account_login_start,
@@ -1068,6 +1088,35 @@ impl Codex {
         requests::GetAccountParams,
         responses::GetAccountResult
     );
+    codex_forward_typed_method!(
+        fuzzy_file_search_session_start,
+        requests::FuzzyFileSearchSessionStartParams,
+        responses::FuzzyFileSearchSessionStartResult
+    );
+    codex_forward_typed_method!(
+        fuzzy_file_search_session_update,
+        requests::FuzzyFileSearchSessionUpdateParams,
+        responses::FuzzyFileSearchSessionUpdateResult
+    );
+    codex_forward_typed_method!(
+        fuzzy_file_search_session_stop,
+        requests::FuzzyFileSearchSessionStopParams,
+        responses::FuzzyFileSearchSessionStopResult
+    );
+
+    pub async fn skills_remote_read(
+        &self,
+        params: requests::SkillsRemoteReadParams,
+    ) -> Result<responses::SkillsRemoteReadResult, ClientError> {
+        self.skills_remote_list(params).await
+    }
+
+    pub async fn skills_remote_write(
+        &self,
+        params: requests::SkillsRemoteWriteParams,
+    ) -> Result<responses::SkillsRemoteWriteResult, ClientError> {
+        self.skills_remote_export(params).await
+    }
 
     codex_forward_null_method!(config_mcp_server_reload, EmptyObject);
     codex_forward_null_method!(account_logout, EmptyObject);
@@ -1166,10 +1215,8 @@ impl Thread {
             self.needs_resume = false;
             self.last_turn_id = None;
         } else if self.needs_resume {
-            let resume_params = requests::ThreadResumeParams {
-                thread_id: self.id.clone().unwrap_or_default(),
-                extra: Map::new(),
-            };
+            let resume_params =
+                build_thread_resume_params(&self.id.clone().unwrap_or_default(), &self.options);
             let resumed = self.codex.inner.client.thread_resume(resume_params).await?;
             self.id = Some(resumed.thread.id);
             self.needs_resume = false;
@@ -1621,6 +1668,96 @@ fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartPa
         ephemeral: options.ephemeral,
         base_instructions: options.base_instructions.clone(),
         developer_instructions: options.developer_instructions.clone(),
+        extra,
+    }
+}
+
+fn build_thread_resume_params(
+    thread_id: &str,
+    options: &ThreadOptions,
+) -> requests::ThreadResumeParams {
+    let mut extra = Map::new();
+    if let Some(skip) = options.skip_git_repo_check {
+        extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
+    }
+    if let Some(mode) = options.web_search_mode {
+        extra.insert(
+            "webSearchMode".to_string(),
+            Value::String(mode.as_str().to_string()),
+        );
+    }
+    if let Some(enabled) = options.web_search_enabled {
+        extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
+    }
+    if let Some(network) = options.network_access_enabled {
+        extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
+    }
+    if let Some(additional) = &options.additional_directories {
+        extra.insert(
+            "additionalDirectories".to_string(),
+            Value::Array(
+                additional
+                    .iter()
+                    .map(|entry| Value::String(entry.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(policy) = &options.sandbox_policy {
+        extra.insert("sandboxPolicy".to_string(), policy.clone());
+    }
+    if let Some(effort) = options.model_reasoning_effort {
+        extra.insert(
+            "effort".to_string(),
+            Value::String(effort.as_str().to_string()),
+        );
+    }
+    if let Some(summary) = options.model_reasoning_summary {
+        extra.insert(
+            "summary".to_string(),
+            Value::String(summary.as_str().to_string()),
+        );
+    }
+    if let Some(ephemeral) = options.ephemeral {
+        extra.insert("ephemeral".to_string(), Value::Bool(ephemeral));
+    }
+    if let Some(collaboration_mode) = &options.collaboration_mode {
+        extra.insert(
+            "collaborationMode".to_string(),
+            collaboration_mode.as_value(),
+        );
+    }
+    if let Some(dynamic_tools) = &options.dynamic_tools {
+        extra.insert(
+            "dynamicTools".to_string(),
+            Value::Array(
+                dynamic_tools
+                    .iter()
+                    .map(DynamicToolSpec::as_value)
+                    .collect(),
+            ),
+        );
+    }
+    if let Some(enabled) = options.experimental_raw_events {
+        extra.insert("experimentalRawEvents".to_string(), Value::Bool(enabled));
+    }
+
+    requests::ThreadResumeParams {
+        thread_id: thread_id.to_string(),
+        history: None,
+        path: None,
+        model: options.model.clone(),
+        model_provider: options.model_provider.clone(),
+        cwd: options.working_directory.clone(),
+        approval_policy: options
+            .approval_policy
+            .map(|mode| mode.as_str().to_string()),
+        sandbox: options.sandbox_mode.map(|mode| mode.as_str().to_string()),
+        config: options.config.clone(),
+        base_instructions: options.base_instructions.clone(),
+        developer_instructions: options.developer_instructions.clone(),
+        personality: options.personality.map(|value| value.as_str().to_string()),
+        persist_extended_history: options.persist_extended_history,
         extra,
     }
 }
@@ -2269,6 +2406,42 @@ mod tests {
         );
         assert_eq!(
             thread_params.extra.get("persistExtendedHistory"),
+            Some(&Value::Bool(true))
+        );
+
+        let resume_params = build_thread_resume_params("thread_123", &options);
+        assert_eq!(resume_params.thread_id, "thread_123");
+        assert_eq!(resume_params.model.as_deref(), Some("gpt-5.2-codex"));
+        assert_eq!(
+            resume_params.model_provider.as_deref(),
+            Some("mock_provider")
+        );
+        assert_eq!(resume_params.cwd.as_deref(), Some("/tmp/workspace"));
+        assert_eq!(resume_params.approval_policy.as_deref(), Some("on-request"));
+        assert_eq!(resume_params.sandbox.as_deref(), Some("workspace-write"));
+        assert_eq!(resume_params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(
+            resume_params
+                .config
+                .as_ref()
+                .and_then(|config| config.get("sandbox_workspace_write.network_access")),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(resume_params.persist_extended_history, Some(true));
+        assert_eq!(
+            resume_params.extra.get("sandboxPolicy"),
+            Some(&json!({"type": "dangerFullAccess"}))
+        );
+        assert_eq!(
+            resume_params.extra.get("effort"),
+            Some(&Value::String("none".to_string()))
+        );
+        assert_eq!(
+            resume_params.extra.get("summary"),
+            Some(&Value::String("auto".to_string()))
+        );
+        assert_eq!(
+            resume_params.extra.get("experimentalRawEvents"),
             Some(&Value::Bool(true))
         );
 
