@@ -6,8 +6,9 @@ use std::process::Command;
 use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
-    ApprovalMode, Codex, ModelReasoningEffort, ModelReasoningSummary, Personality, SandboxMode,
-    ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions, WebSearchMode,
+    ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary, Personality,
+    SandboxMode, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
+    WebSearchMode,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
@@ -38,16 +39,16 @@ Options:
   --model-provider PROVIDER        Override model provider
   --reasoning-effort LEVEL         Override reasoning effort: none|minimal|low|medium|high|xhigh
   --reasoning-summary MODE         Override reasoning summary: none|auto|concise|detailed
+  --model-verbosity LEVEL          Set model verbosity via config: low|medium|high
+  --config-profile NAME            Set config profile override
   --approval-policy MODE           Set approval policy: never|on-request|on-failure|untrusted
   --sandbox MODE                   Set sandbox mode: read-only|workspace-write|danger-full-access
   --sandbox-policy-json JSON       Set sandbox policy JSON payload
-  --skip-git-repo-check            Allow running outside a Git repository
-  --network-access-enabled         Force network access enabled
-  --network-access-disabled        Force network access disabled
+  --sandbox-network-access-enabled Enable workspace-write network access in config
+  --sandbox-network-access-disabled Disable workspace-write network access in config
+  --sandbox-writable-root PATH     Add workspace-write writable root (repeatable)
   --web-search-mode MODE           Set web search mode: disabled|cached|live
-  --web-search-enabled             Force web search enabled
-  --web-search-disabled            Force web search disabled
-  --add-dir PATH                   Additional writable directory (repeatable)
+  --dynamic-tools-json JSON        Set thread/start dynamicTools JSON array
   --personality MODE               Set personality: none|friendly|pragmatic
   --base-instructions TEXT         Set base instructions
   --developer-instructions TEXT    Set developer instructions (overrides --agent instructions)
@@ -91,14 +92,15 @@ struct CliArgs {
     model_provider: Option<String>,
     reasoning_effort: Option<ModelReasoningEffort>,
     reasoning_summary: Option<ModelReasoningSummary>,
+    model_verbosity: Option<ModelVerbosity>,
+    config_profile: Option<String>,
     approval_policy: Option<ApprovalMode>,
     sandbox_mode: Option<SandboxMode>,
     sandbox_policy_json: Option<String>,
-    skip_git_repo_check: Option<bool>,
-    network_access_enabled: Option<bool>,
+    sandbox_network_access_enabled: Option<bool>,
+    sandbox_writable_roots: Vec<String>,
     web_search_mode: Option<WebSearchMode>,
-    web_search_enabled: Option<bool>,
-    additional_directories: Vec<String>,
+    dynamic_tools_json: Option<String>,
     personality: Option<Personality>,
     base_instructions: Option<String>,
     developer_instructions: Option<String>,
@@ -147,6 +149,31 @@ struct AgentConfigLayer {
 enum ParsedCommand {
     Help,
     Run(CliArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelVerbosity {
+    Low,
+    Medium,
+    High,
+}
+
+impl ModelVerbosity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CliDynamicToolSpec {
+    name: String,
+    description: String,
+    input_schema: Value,
 }
 
 #[derive(Debug, Error)]
@@ -203,14 +230,15 @@ async fn run() -> Result<(), SparkError> {
         model_provider,
         reasoning_effort,
         reasoning_summary,
+        model_verbosity,
+        config_profile,
         approval_policy,
         sandbox_mode,
         sandbox_policy_json,
-        skip_git_repo_check,
-        network_access_enabled,
+        sandbox_network_access_enabled,
+        sandbox_writable_roots,
         web_search_mode,
-        web_search_enabled,
-        additional_directories,
+        dynamic_tools_json,
         personality,
         base_instructions,
         developer_instructions,
@@ -253,7 +281,15 @@ async fn run() -> Result<(), SparkError> {
             }
         },
     };
-    let thread_config = match build_thread_config(config_json, config_entries) {
+    let thread_config = match build_thread_config(
+        config_json,
+        config_entries,
+        web_search_mode,
+        config_profile,
+        model_verbosity,
+        sandbox_network_access_enabled,
+        sandbox_writable_roots,
+    ) {
         Ok(config) => config,
         Err(err) => {
             connect_task.abort();
@@ -282,40 +318,25 @@ async fn run() -> Result<(), SparkError> {
             return Err(err);
         }
     };
+    let dynamic_tools = match parse_optional_dynamic_tools(dynamic_tools_json) {
+        Ok(dynamic_tools) => dynamic_tools,
+        Err(err) => {
+            connect_task.abort();
+            return Err(err);
+        }
+    };
 
     let mut thread_options = ThreadOptions::builder()
         .model(model.unwrap_or_else(|| MODEL.to_string()))
-        .model_reasoning_effort(reasoning_effort.unwrap_or(ModelReasoningEffort::XHigh))
         .working_directory(working_directory);
     if let Some(model_provider) = model_provider {
         thread_options = thread_options.model_provider(model_provider);
-    }
-    if let Some(reasoning_summary) = reasoning_summary {
-        thread_options = thread_options.model_reasoning_summary(reasoning_summary);
     }
     if let Some(approval_policy) = approval_policy {
         thread_options = thread_options.approval_policy(approval_policy);
     }
     if let Some(sandbox_mode) = sandbox_mode {
         thread_options = thread_options.sandbox_mode(sandbox_mode);
-    }
-    if let Some(sandbox_policy) = sandbox_policy {
-        thread_options = thread_options.sandbox_policy(sandbox_policy);
-    }
-    if let Some(skip_git_repo_check) = skip_git_repo_check {
-        thread_options = thread_options.skip_git_repo_check(skip_git_repo_check);
-    }
-    if let Some(network_access_enabled) = network_access_enabled {
-        thread_options = thread_options.network_access_enabled(network_access_enabled);
-    }
-    if let Some(web_search_mode) = web_search_mode {
-        thread_options = thread_options.web_search_mode(web_search_mode);
-    }
-    if let Some(web_search_enabled) = web_search_enabled {
-        thread_options = thread_options.web_search_enabled(web_search_enabled);
-    }
-    if !additional_directories.is_empty() {
-        thread_options = thread_options.additional_directories(additional_directories);
     }
     if let Some(personality) = personality {
         thread_options = thread_options.personality(personality);
@@ -328,6 +349,9 @@ async fn run() -> Result<(), SparkError> {
     }
     if let Some(config) = thread_config {
         thread_options = thread_options.config(config);
+    }
+    if let Some(dynamic_tools) = dynamic_tools {
+        thread_options = thread_options.dynamic_tools(dynamic_tools);
     }
     if let Some(experimental_raw_events) = experimental_raw_events {
         thread_options = thread_options.experimental_raw_events(experimental_raw_events);
@@ -350,6 +374,14 @@ async fn run() -> Result<(), SparkError> {
     }
 
     let mut turn_options = TurnOptions::builder();
+    turn_options = turn_options
+        .model_reasoning_effort(reasoning_effort.unwrap_or(ModelReasoningEffort::XHigh));
+    if let Some(reasoning_summary) = reasoning_summary {
+        turn_options = turn_options.model_reasoning_summary(reasoning_summary);
+    }
+    if let Some(sandbox_policy) = sandbox_policy {
+        turn_options = turn_options.sandbox_policy(sandbox_policy);
+    }
     if let Some(output_schema) = output_schema {
         turn_options = turn_options.output_schema(output_schema);
     }
@@ -619,14 +651,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     let mut model_provider: Option<String> = None;
     let mut reasoning_effort: Option<ModelReasoningEffort> = None;
     let mut reasoning_summary: Option<ModelReasoningSummary> = None;
+    let mut model_verbosity: Option<ModelVerbosity> = None;
+    let mut config_profile: Option<String> = None;
     let mut approval_policy: Option<ApprovalMode> = None;
     let mut sandbox_mode: Option<SandboxMode> = None;
     let mut sandbox_policy_json: Option<String> = None;
-    let mut skip_git_repo_check: Option<bool> = None;
-    let mut network_access_enabled: Option<bool> = None;
+    let mut sandbox_network_access_enabled: Option<bool> = None;
+    let mut sandbox_writable_roots = Vec::new();
     let mut web_search_mode: Option<WebSearchMode> = None;
-    let mut web_search_enabled: Option<bool> = None;
-    let mut additional_directories = Vec::new();
+    let mut dynamic_tools_json: Option<String> = None;
     let mut personality: Option<Personality> = None;
     let mut base_instructions: Option<String> = None;
     let mut developer_instructions: Option<String> = None;
@@ -778,6 +811,36 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 )?;
                 continue;
             }
+            if arg == "--model-verbosity" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --model-verbosity".to_string())
+                })?;
+                set_option_once(
+                    &mut model_verbosity,
+                    parse_model_verbosity(&raw)?,
+                    "--model-verbosity",
+                )?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--model-verbosity=") {
+                set_option_once(
+                    &mut model_verbosity,
+                    parse_model_verbosity(raw)?,
+                    "--model-verbosity",
+                )?;
+                continue;
+            }
+            if arg == "--config-profile" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --config-profile".to_string())
+                })?;
+                set_string_option_once(&mut config_profile, &raw, "--config-profile")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--config-profile=") {
+                set_string_option_once(&mut config_profile, raw, "--config-profile")?;
+                continue;
+            }
             if arg == "--approval-policy" {
                 let raw = iter.next().ok_or_else(|| {
                     SparkError::Usage("missing value for --approval-policy".to_string())
@@ -819,24 +882,31 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 set_string_option_once(&mut sandbox_policy_json, raw, "--sandbox-policy-json")?;
                 continue;
             }
-            if arg == "--skip-git-repo-check" {
-                set_option_once(&mut skip_git_repo_check, true, "--skip-git-repo-check")?;
-                continue;
-            }
-            if arg == "--network-access-enabled" {
+            if arg == "--sandbox-network-access-enabled" {
                 set_option_once(
-                    &mut network_access_enabled,
+                    &mut sandbox_network_access_enabled,
                     true,
-                    "--network-access-enabled/--network-access-disabled",
+                    "--sandbox-network-access-enabled/--sandbox-network-access-disabled",
                 )?;
                 continue;
             }
-            if arg == "--network-access-disabled" {
+            if arg == "--sandbox-network-access-disabled" {
                 set_option_once(
-                    &mut network_access_enabled,
+                    &mut sandbox_network_access_enabled,
                     false,
-                    "--network-access-enabled/--network-access-disabled",
+                    "--sandbox-network-access-enabled/--sandbox-network-access-disabled",
                 )?;
+                continue;
+            }
+            if arg == "--sandbox-writable-root" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --sandbox-writable-root".to_string())
+                })?;
+                sandbox_writable_roots.push(normalize_working_directory(&raw)?);
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--sandbox-writable-root=") {
+                sandbox_writable_roots.push(normalize_working_directory(raw)?);
                 continue;
             }
             if arg == "--web-search-mode" {
@@ -858,31 +928,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 )?;
                 continue;
             }
-            if arg == "--web-search-enabled" {
-                set_option_once(
-                    &mut web_search_enabled,
-                    true,
-                    "--web-search-enabled/--web-search-disabled",
-                )?;
+            if arg == "--dynamic-tools-json" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --dynamic-tools-json".to_string())
+                })?;
+                set_string_option_once(&mut dynamic_tools_json, &raw, "--dynamic-tools-json")?;
                 continue;
             }
-            if arg == "--web-search-disabled" {
-                set_option_once(
-                    &mut web_search_enabled,
-                    false,
-                    "--web-search-enabled/--web-search-disabled",
-                )?;
-                continue;
-            }
-            if arg == "--add-dir" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --add-dir".to_string()))?;
-                additional_directories.push(normalize_working_directory(&raw)?);
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--add-dir=") {
-                additional_directories.push(normalize_working_directory(raw)?);
+            if let Some(raw) = arg.strip_prefix("--dynamic-tools-json=") {
+                set_string_option_once(&mut dynamic_tools_json, raw, "--dynamic-tools-json")?;
                 continue;
             }
             if arg == "--personality" {
@@ -1047,14 +1101,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         model_provider,
         reasoning_effort,
         reasoning_summary,
+        model_verbosity,
+        config_profile,
         approval_policy,
         sandbox_mode,
         sandbox_policy_json,
-        skip_git_repo_check,
-        network_access_enabled,
+        sandbox_network_access_enabled,
+        sandbox_writable_roots,
         web_search_mode,
-        web_search_enabled,
-        additional_directories,
+        dynamic_tools_json,
         personality,
         base_instructions,
         developer_instructions,
@@ -1146,6 +1201,17 @@ fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, SparkErro
     }
 }
 
+fn parse_model_verbosity(raw: &str) -> Result<ModelVerbosity, SparkError> {
+    match raw.trim() {
+        "low" => Ok(ModelVerbosity::Low),
+        "medium" => Ok(ModelVerbosity::Medium),
+        "high" => Ok(ModelVerbosity::High),
+        _ => Err(SparkError::Usage(format!(
+            "invalid --model-verbosity '{raw}'; expected one of: low, medium, high"
+        ))),
+    }
+}
+
 fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, SparkError> {
     match raw.trim() {
         "never" => Ok(ApprovalMode::Never),
@@ -1177,6 +1243,14 @@ fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, SparkError> {
         _ => Err(SparkError::Usage(format!(
             "invalid --web-search-mode '{raw}'; expected one of: disabled, cached, live"
         ))),
+    }
+}
+
+fn web_search_mode_as_str(mode: WebSearchMode) -> &'static str {
+    match mode {
+        WebSearchMode::Disabled => "disabled",
+        WebSearchMode::Cached => "cached",
+        WebSearchMode::Live => "live",
     }
 }
 
@@ -1214,9 +1288,48 @@ fn parse_optional_json_object(
     }
 }
 
+fn parse_optional_dynamic_tools(
+    raw: Option<String>,
+) -> Result<Option<Vec<DynamicToolSpec>>, SparkError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let parsed = parse_json_value(&raw, "--dynamic-tools-json")?;
+    let array = match parsed {
+        Value::Array(array) => array,
+        _ => {
+            return Err(SparkError::Usage(
+                "--dynamic-tools-json must be a JSON array".to_string(),
+            ));
+        }
+    };
+
+    let mut tools = Vec::with_capacity(array.len());
+    for (index, item) in array.into_iter().enumerate() {
+        let spec: CliDynamicToolSpec = serde_json::from_value(item).map_err(|error| {
+            SparkError::Usage(format!(
+                "invalid --dynamic-tools-json entry at index {index}: {error}"
+            ))
+        })?;
+        tools.push(DynamicToolSpec::new(
+            spec.name,
+            spec.description,
+            spec.input_schema,
+        ));
+    }
+
+    Ok(Some(tools))
+}
+
 fn build_thread_config(
     config_json: Option<String>,
     config_entries: Vec<String>,
+    web_search_mode: Option<WebSearchMode>,
+    config_profile: Option<String>,
+    model_verbosity: Option<ModelVerbosity>,
+    sandbox_network_access_enabled: Option<bool>,
+    sandbox_writable_roots: Vec<String>,
 ) -> Result<Option<Map<String, Value>>, SparkError> {
     let mut config = parse_optional_json_object(config_json, "--config-json")?.unwrap_or_default();
 
@@ -1244,6 +1357,39 @@ fn build_thread_config(
         let parsed = serde_json::from_str::<Value>(value)
             .unwrap_or_else(|_| Value::String(value.to_string()));
         config.insert(key.to_string(), parsed);
+    }
+
+    if let Some(mode) = web_search_mode {
+        config.insert(
+            "web_search".to_string(),
+            Value::String(web_search_mode_as_str(mode).to_string()),
+        );
+    }
+    if let Some(profile) = config_profile {
+        config.insert("profile".to_string(), Value::String(profile));
+    }
+    if let Some(verbosity) = model_verbosity {
+        config.insert(
+            "model_verbosity".to_string(),
+            Value::String(verbosity.as_str().to_string()),
+        );
+    }
+    if let Some(enabled) = sandbox_network_access_enabled {
+        config.insert(
+            "sandbox_workspace_write.network_access".to_string(),
+            Value::Bool(enabled),
+        );
+    }
+    if !sandbox_writable_roots.is_empty() {
+        config.insert(
+            "sandbox_workspace_write.writable_roots".to_string(),
+            Value::Array(
+                sandbox_writable_roots
+                    .into_iter()
+                    .map(Value::String)
+                    .collect(),
+            ),
+        );
     }
 
     if config.is_empty() {
@@ -1532,7 +1678,10 @@ fn resolve_path_from_file(file_path: &Path, raw_path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn parse_cli_args_supports_agent_flag_and_prompt() {
@@ -1742,17 +1891,18 @@ mod tests {
                 "sandboxed-provider".to_string(),
                 "--reasoning-effort=high".to_string(),
                 "--reasoning-summary=detailed".to_string(),
+                "--model-verbosity=high".to_string(),
+                "--config-profile=work".to_string(),
                 "--approval-policy=on-failure".to_string(),
                 "--sandbox=workspace-write".to_string(),
                 "--sandbox-policy-json".to_string(),
                 "{\"type\":\"workspaceWrite\"}".to_string(),
-                "--skip-git-repo-check".to_string(),
-                "--network-access-disabled".to_string(),
-                "--web-search-mode=live".to_string(),
-                "--web-search-enabled".to_string(),
-                "--add-dir".to_string(),
+                "--sandbox-network-access-disabled".to_string(),
+                "--sandbox-writable-root".to_string(),
                 "/tmp/one".to_string(),
-                "--add-dir=/tmp/two".to_string(),
+                "--sandbox-writable-root=/tmp/two".to_string(),
+                "--web-search-mode=live".to_string(),
+                "--dynamic-tools-json=[{\"name\":\"lookup\",\"description\":\"Lookup docs\",\"inputSchema\":{\"type\":\"object\"}}]".to_string(),
                 "--personality=pragmatic".to_string(),
                 "--base-instructions".to_string(),
                 "base rules".to_string(),
@@ -1781,17 +1931,23 @@ mod tests {
         assert_eq!(cli.model_provider.as_deref(), Some("sandboxed-provider"));
         assert_eq!(cli.reasoning_effort, Some(ModelReasoningEffort::High));
         assert_eq!(cli.reasoning_summary, Some(ModelReasoningSummary::Detailed));
+        assert_eq!(cli.model_verbosity, Some(ModelVerbosity::High));
+        assert_eq!(cli.config_profile.as_deref(), Some("work"));
         assert_eq!(cli.approval_policy, Some(ApprovalMode::OnFailure));
         assert_eq!(cli.sandbox_mode, Some(SandboxMode::WorkspaceWrite));
         assert_eq!(
             cli.sandbox_policy_json.as_deref(),
             Some("{\"type\":\"workspaceWrite\"}")
         );
-        assert_eq!(cli.skip_git_repo_check, Some(true));
-        assert_eq!(cli.network_access_enabled, Some(false));
+        assert_eq!(cli.sandbox_network_access_enabled, Some(false));
+        assert_eq!(cli.sandbox_writable_roots, vec!["/tmp/one", "/tmp/two"]);
         assert_eq!(cli.web_search_mode, Some(WebSearchMode::Live));
-        assert_eq!(cli.web_search_enabled, Some(true));
-        assert_eq!(cli.additional_directories, vec!["/tmp/one", "/tmp/two"]);
+        assert_eq!(
+            cli.dynamic_tools_json.as_deref(),
+            Some(
+                "[{\"name\":\"lookup\",\"description\":\"Lookup docs\",\"inputSchema\":{\"type\":\"object\"}}]"
+            )
+        );
         assert_eq!(cli.personality, Some(Personality::Pragmatic));
         assert_eq!(cli.base_instructions.as_deref(), Some("base rules"));
         assert_eq!(cli.developer_instructions.as_deref(), Some("dev rules"));
@@ -1808,6 +1964,13 @@ mod tests {
             cli.turn_extra_json.as_deref(),
             Some("{\"customTurnFlag\":true}")
         );
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_removed_network_access_flag() {
+        let error = parse_cli_args(vec!["--network-access-enabled".to_string()].into_iter())
+            .expect_err("removed network access flag");
+        assert!(matches!(error, SparkError::Usage(_)));
     }
 
     #[test]
@@ -2199,7 +2362,9 @@ config_file = \"roles/reviewer.toml\"
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let path = env::temp_dir().join(format!("spark-tests-{}-{stamp}", std::process::id()));
+        let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            env::temp_dir().join(format!("spark-tests-{}-{stamp}-{seq}", std::process::id()));
         fs::create_dir_all(&path).expect("create temp dir");
         path
     }

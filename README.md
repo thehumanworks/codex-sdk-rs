@@ -255,11 +255,12 @@ cargo run -p spark -- --resume thread_123 "Continue from that session."
 Additional optional config flags:
 
 - transport/session: `--ws-url`, `--stdio`, `--continue`, `--resume`
-- model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`
-- policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--skip-git-repo-check`, `--ephemeral`
-- network/search: `--network-access-enabled|--network-access-disabled`, `--web-search-mode`, `--web-search-enabled|--web-search-disabled`
+- model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
+- policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
+- network/search: `--web-search-mode`
 - instructions/personality: `--agent`, `--base-instructions`, `--developer-instructions`, `--personality`
-- config/schema: `--config`, `--config-json`, `--output-schema-json`, `--output-schema-file`, `--turn-extra-json`
+- config/schema: `--config`, `--config-json`, `--config-profile`, `--output-schema-json`, `--output-schema-file`, `--turn-extra-json`
+- app-server extras: `--dynamic-tools-json`
 
 Example with explicit overrides:
 
@@ -269,8 +270,9 @@ cargo run -p spark -- \
   --reasoning-effort high \
   --approval-policy on-request \
   --sandbox workspace-write \
+  --sandbox-network-access-enabled \
+  --sandbox-writable-root /tmp/reports \
   --web-search-mode live \
-  --config 'sandbox_workspace_write.network_access=true' \
   --output-schema-json '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}' \
   "Return JSON with an answer field."
 ```
