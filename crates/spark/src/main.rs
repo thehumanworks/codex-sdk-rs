@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
     ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary, Personality,
-    SandboxMode, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
+    SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
     WebSearchMode,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
@@ -21,14 +21,21 @@ const MODEL: &str = "gpt-5.3-codex-spark";
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
+const SESSION_PREVIEW_CHAR_LIMIT: usize = 96;
 
 const USAGE: &str = "\
-Usage: spark [OPTIONS] [PROMPT...]
+Usage:
+  spark [OPTIONS] [PROMPT...]
+  spark sessions [--all] [--ws-url URL | --stdio]
 
 Runs one turn with:
   model default: gpt-5.3-codex-spark
   reasoning effort default: xhigh
   transport default: websocket (ws://127.0.0.1:4222)
+
+Commands:
+  sessions                         List recorded sessions ordered by last activity
+                                   (default: sessions from current directory; use --all for all)
 
 Options:
   --agent NAME                     Load ~/.codex/config.toml [agents.NAME]
@@ -57,6 +64,7 @@ Options:
   --persist-extended-history       Persist extended history for resume/fork/read
   --config KEY=VALUE               Set config override (VALUE parsed as JSON when valid)
   --config-json JSON               Merge config object JSON into thread config
+  --output-schema FILE             Load turn output schema JSON from file (codex exec compat)
   --output-schema-json JSON        Set turn output schema JSON
   --output-schema-file PATH        Load turn output schema JSON from file
   --turn-extra-json JSON           Merge object JSON into turn/start raw extras
@@ -66,6 +74,8 @@ Options:
                                   Resume the specified session id
   --final-response
                                   Output only the final message text (no streamed deltas)
+  --json                           Print events to stdout as JSONL (codex exec compat)
+  --all                            Show all sessions (used with sessions command)
   -h, --help                       Show this help
 
 If PROMPT is omitted, spark reads the prompt from stdin.
@@ -113,7 +123,10 @@ struct CliArgs {
     output_schema_file: Option<String>,
     turn_extra_json: Option<String>,
     resume_target: Option<ResumeTarget>,
+    sessions: bool,
+    sessions_all: bool,
     final_response_only: bool,
+    json_output: bool,
     transport_mode: TransportMode,
     prompt_parts: Vec<String>,
 }
@@ -251,15 +264,37 @@ async fn run() -> Result<(), SparkError> {
         output_schema_file,
         turn_extra_json,
         resume_target,
+        sessions: show_sessions,
+        sessions_all,
         final_response_only,
+        json_output,
         transport_mode,
         prompt_parts,
     } = cli;
 
     let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
+    if show_sessions {
+        let cwd_filter = if sessions_all {
+            None
+        } else {
+            let cwd = working_directory
+                .clone()
+                .map(Ok)
+                .unwrap_or_else(resolve_current_working_directory)?;
+            Some(cwd)
+        };
+        let codex = match transport_mode {
+            TransportMode::WebSocket => connect_ws_codex(&websocket_url).await?,
+            TransportMode::Stdio => spawn_stdio_codex().await?,
+        };
+        list_sessions(&codex, cwd_filter.as_deref()).await?;
+        return Ok(());
+    }
+
+    let websocket_url_for_connect = websocket_url.clone();
     let connect_task = tokio::spawn(async move {
         match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url).await,
+            TransportMode::WebSocket => connect_ws_codex(&websocket_url_for_connect).await,
             TransportMode::Stdio => spawn_stdio_codex().await,
         }
     });
@@ -392,6 +427,9 @@ async fn run() -> Result<(), SparkError> {
     let codex = connect_task
         .await
         .map_err(|error| SparkError::Config(format!("transport connect task failed: {error}")))??;
+
+    ensure_authenticated(&codex).await?;
+
     let options = thread_options.build();
     let turn_options = turn_options.build();
     let mut thread = match resume_target {
@@ -422,6 +460,16 @@ async fn run() -> Result<(), SparkError> {
 
     let mut streamed = thread.run_streamed(prompt, turn_options).await?;
 
+    if json_output {
+        stream_json_events(&mut streamed).await?;
+    } else {
+        stream_text_events(&mut streamed).await?;
+    }
+
+    Ok(())
+}
+
+async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkError> {
     let mut stdout = io::stdout();
     let mut saw_terminal = false;
     let mut saw_delta_for_message = false;
@@ -492,6 +540,152 @@ async fn run() -> Result<(), SparkError> {
     Ok(())
 }
 
+async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), SparkError> {
+    let mut stdout = io::stdout();
+
+    while let Some(next) = streamed.next_event().await {
+        let event = next?;
+        let json_event = match &event {
+            ThreadEvent::ThreadStarted { thread_id } => {
+                serde_json::json!({ "type": "thread.started", "threadId": thread_id })
+            }
+            ThreadEvent::TurnStarted => {
+                serde_json::json!({ "type": "turn.started" })
+            }
+            ThreadEvent::TurnCompleted { usage } => {
+                let mut obj = serde_json::json!({ "type": "turn.completed" });
+                if let Some(usage) = usage {
+                    obj["usage"] = serde_json::json!({
+                        "inputTokens": usage.input_tokens,
+                        "cachedInputTokens": usage.cached_input_tokens,
+                        "outputTokens": usage.output_tokens,
+                    });
+                }
+                obj
+            }
+            ThreadEvent::TurnFailed { error } => {
+                serde_json::json!({ "type": "turn.failed", "error": { "message": error.message } })
+            }
+            ThreadEvent::ItemStarted { item } => {
+                serde_json::json!({ "type": "item.started", "item": thread_item_to_json(item) })
+            }
+            ThreadEvent::ItemUpdated { item } => {
+                serde_json::json!({ "type": "item.updated", "item": thread_item_to_json(item) })
+            }
+            ThreadEvent::ItemCompleted { item } => {
+                serde_json::json!({ "type": "item.completed", "item": thread_item_to_json(item) })
+            }
+            ThreadEvent::Error { message } => {
+                serde_json::json!({ "type": "error", "message": message })
+            }
+        };
+
+        let line = serde_json::to_string(&json_event)
+            .map_err(|err| SparkError::Config(format!("failed to serialize event: {err}")))?;
+        writeln!(stdout, "{line}")?;
+
+        match event {
+            ThreadEvent::TurnCompleted { .. } => break,
+            ThreadEvent::TurnFailed { error } => {
+                return Err(SparkError::Config(format!(
+                    "turn failed: {}",
+                    error.message
+                )));
+            }
+            ThreadEvent::Error { message } => {
+                return Err(SparkError::Config(format!("stream error: {message}")));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn thread_item_to_json(item: &ThreadItem) -> Value {
+    match item {
+        ThreadItem::AgentMessage(msg) => serde_json::json!({
+            "type": "agentMessage",
+            "id": msg.id,
+            "text": msg.text,
+        }),
+        ThreadItem::Reasoning(r) => serde_json::json!({
+            "type": "reasoning",
+            "id": r.id,
+            "text": r.text,
+        }),
+        ThreadItem::CommandExecution(cmd) => serde_json::json!({
+            "type": "commandExecution",
+            "id": cmd.id,
+            "command": cmd.command,
+            "aggregatedOutput": cmd.aggregated_output,
+            "exitCode": cmd.exit_code,
+            "status": format!("{:?}", cmd.status),
+        }),
+        ThreadItem::FileChange(fc) => {
+            let changes: Vec<Value> = fc
+                .changes
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "path": c.path,
+                        "kind": format!("{:?}", c.kind),
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "type": "fileChange",
+                "id": fc.id,
+                "changes": changes,
+                "status": format!("{:?}", fc.status),
+            })
+        }
+        ThreadItem::McpToolCall(mcp) => serde_json::json!({
+            "type": "mcpToolCall",
+            "id": mcp.id,
+            "server": mcp.server,
+            "tool": mcp.tool,
+            "arguments": mcp.arguments,
+            "result": mcp.result,
+            "error": mcp.error.as_ref().map(|e| &e.message),
+            "status": format!("{:?}", mcp.status),
+        }),
+        ThreadItem::WebSearch(ws) => serde_json::json!({
+            "type": "webSearch",
+            "id": ws.id,
+            "query": ws.query,
+        }),
+        ThreadItem::TodoList(todo) => {
+            let items: Vec<Value> = todo
+                .items
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "text": t.text,
+                        "completed": t.completed,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "type": "todoList",
+                "id": todo.id,
+                "items": items,
+            })
+        }
+        ThreadItem::Error(err) => serde_json::json!({
+            "type": "error",
+            "id": err.id,
+            "message": err.message,
+        }),
+        ThreadItem::Unknown(u) => serde_json::json!({
+            "type": "unknown",
+            "id": u.id,
+            "itemType": u.item_type,
+            "raw": u.raw,
+        }),
+    }
+}
+
 async fn connect_ws_codex(url: &str) -> Result<Codex, SparkError> {
     let client = CodexClient::connect_ws(WsConfig {
         url: url.to_string(),
@@ -507,6 +701,43 @@ async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
     let mut stdio_config = StdioConfig::default();
     stdio_config.codex_binary = codex_binary;
     Ok(Codex::spawn_stdio(stdio_config).await?)
+}
+
+/// Ensure the codex session is authenticated using a cascading strategy:
+/// 1. Rely on existing cached auth (auth.json) — check via `account_read`.
+/// 2. If not authenticated, try `CODEX_ID_TOKEN` + `CODEX_ACCESS_TOKEN` env vars (ChatGPT login).
+/// 3. If those aren't available, try `OPENAI_API_KEY` env var (API key login).
+async fn ensure_authenticated(codex: &Codex) -> Result<(), SparkError> {
+    // Check if the app-server already has valid cached auth.
+    let account = codex
+        .account_read(requests::GetAccountParams::default())
+        .await?;
+    if account.extra.get("isLoggedIn") == Some(&Value::Bool(true)) {
+        return Ok(());
+    }
+
+    // Fallback 1: ChatGPT Pro bearer tokens from env.
+    if let (Ok(id_token), Ok(access_token)) =
+        (env::var("CODEX_ID_TOKEN"), env::var("CODEX_ACCESS_TOKEN"))
+    {
+        codex
+            .account_login_start(requests::LoginAccountParams::chatgpt(
+                id_token,
+                access_token,
+            ))
+            .await?;
+        return Ok(());
+    }
+
+    // Fallback 2: OpenAI API key from env.
+    if let Ok(api_key) = env::var("OPENAI_API_KEY") {
+        codex
+            .account_login_start(requests::LoginAccountParams::api_key(api_key))
+            .await?;
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 async fn resolve_last_session_id(codex: &Codex) -> Result<String, SparkError> {
@@ -558,6 +789,270 @@ async fn resolve_last_session_id(codex: &Codex) -> Result<String, SparkError> {
     Err(SparkError::Config(
         "no recorded sessions found for --continue; start a spark session first or use --resume <session_id>".to_string(),
     ))
+}
+
+#[derive(Debug)]
+struct SessionListEntry {
+    id: String,
+    recency_score: i64,
+    last_message: String,
+}
+
+async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), SparkError> {
+    let mut cursor: Option<String> = None;
+    let mut pages_scanned = 0usize;
+    let mut sessions = Vec::new();
+
+    loop {
+        pages_scanned += 1;
+        if pages_scanned > MAX_THREAD_LIST_PAGES {
+            return Err(SparkError::Config(format!(
+                "could not list sessions after scanning {MAX_THREAD_LIST_PAGES} pages"
+            )));
+        }
+
+        let params = requests::ThreadListParams {
+            limit: Some(THREAD_LIST_PAGE_LIMIT),
+            cursor: cursor.clone(),
+            ..Default::default()
+        };
+        let result = codex.thread_list(params).await?;
+
+        for thread in result.data {
+            if let Some(filter_cwd) = cwd_filter {
+                let thread_cwd = thread.extra.get("cwd").and_then(|v| v.as_str());
+                match thread_cwd {
+                    Some(cwd) if cwd == filter_cwd => {}
+                    _ => continue,
+                }
+            }
+
+            let recency_score = thread_recency_score(&thread).unwrap_or(i64::MIN);
+            let last_message = resolve_last_message_preview(codex, &thread).await?;
+            sessions.push(SessionListEntry {
+                id: thread.id,
+                recency_score,
+                last_message,
+            });
+        }
+
+        match result.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+
+    sessions.sort_by(|left, right| {
+        right
+            .recency_score
+            .cmp(&left.recency_score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    if sessions.is_empty() {
+        match cwd_filter {
+            Some(cwd) => {
+                println!("No recorded sessions found for {cwd}. Use --all to show all sessions.")
+            }
+            None => println!("No recorded sessions found."),
+        }
+        return Ok(());
+    }
+
+    println!("SESSION_ID\tLAST_MESSAGE");
+    for session in sessions {
+        let preview = crop_preview_text(&session.last_message, SESSION_PREVIEW_CHAR_LIMIT);
+        println!("{}\t{}", session.id, preview);
+    }
+
+    Ok(())
+}
+
+async fn resolve_last_message_preview(
+    codex: &Codex,
+    thread: &responses::ThreadSummary,
+) -> Result<String, SparkError> {
+    if let Some(preview) = extract_summary_preview(&thread.extra) {
+        return Ok(preview);
+    }
+
+    let read_result = codex
+        .thread_read(requests::ThreadReadParams {
+            thread_id: thread.id.clone(),
+            include_turns: Some(true),
+            extra: Map::new(),
+        })
+        .await?;
+
+    Ok(extract_last_message_from_thread_read(&read_result.extra).unwrap_or_default())
+}
+
+fn extract_summary_preview(extra: &Map<String, Value>) -> Option<String> {
+    for key in [
+        "lastMessage",
+        "lastAgentMessage",
+        "lastAssistantMessage",
+        "snippet",
+        "preview",
+    ] {
+        if let Some(text) = extra.get(key).and_then(value_to_text) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+fn extract_last_message_from_thread_read(extra: &Map<String, Value>) -> Option<String> {
+    let mut last_assistant: Option<String> = None;
+    let mut last_any: Option<String> = None;
+
+    if let Some(items) = extra.get("items").and_then(Value::as_array) {
+        let (assistant, any) = extract_last_message_from_items(items);
+        if assistant.is_some() {
+            last_assistant = assistant;
+        }
+        if any.is_some() {
+            last_any = any;
+        }
+    }
+
+    if let Some(turns) = extra.get("turns").and_then(Value::as_array) {
+        for turn in turns {
+            let Some(items) = turn.get("items").and_then(Value::as_array) else {
+                continue;
+            };
+            let (assistant, any) = extract_last_message_from_items(items);
+            if assistant.is_some() {
+                last_assistant = assistant;
+            }
+            if any.is_some() {
+                last_any = any;
+            }
+        }
+    }
+
+    last_assistant.or(last_any)
+}
+
+fn extract_last_message_from_items(items: &[Value]) -> (Option<String>, Option<String>) {
+    let mut last_assistant: Option<String> = None;
+    let mut last_any: Option<String> = None;
+
+    for item in items {
+        let Some(text) = extract_item_text(item) else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if item_is_assistant_message(item) {
+            last_assistant = Some(text.clone());
+        }
+        last_any = Some(text);
+    }
+
+    (last_assistant, last_any)
+}
+
+fn extract_item_text(item: &Value) -> Option<String> {
+    match item {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Array(parts) => {
+            let texts: Vec<String> = parts.iter().filter_map(extract_item_text).collect();
+            if texts.is_empty() {
+                None
+            } else {
+                Some(texts.join(" "))
+            }
+        }
+        Value::Object(object) => {
+            for key in ["text", "content", "message", "output_text", "outputText"] {
+                if let Some(text) = object.get(key).and_then(extract_item_text) {
+                    if !text.is_empty() {
+                        return Some(text);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn item_is_assistant_message(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+
+    if let Some(role) = object.get("role").and_then(Value::as_str) {
+        let role = role.to_ascii_lowercase();
+        if role.contains("assistant") || role.contains("agent") {
+            return true;
+        }
+    }
+
+    if let Some(author) = object.get("author").and_then(Value::as_object) {
+        if let Some(role) = author.get("role").and_then(Value::as_str) {
+            let role = role.to_ascii_lowercase();
+            if role.contains("assistant") || role.contains("agent") {
+                return true;
+            }
+        }
+    }
+
+    if let Some(item_type) = object.get("type").and_then(Value::as_str) {
+        let item_type = item_type.to_ascii_lowercase();
+        if item_type.contains("assistant") || item_type.contains("agent_message") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn value_to_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => extract_item_text(value),
+    }
+}
+
+fn crop_preview_text(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return "(no message)".to_string();
+    }
+    if max_chars == 0 {
+        return "...".to_string();
+    }
+
+    let mut preview = String::new();
+    let mut chars = normalized.chars();
+    for _ in 0..max_chars {
+        let Some(ch) = chars.next() else {
+            return normalized;
+        };
+        preview.push(ch);
+    }
+
+    if chars.next().is_some() {
+        preview.push_str("...");
+    }
+    preview
 }
 
 fn thread_recency_score(thread: &responses::ThreadSummary) -> Option<i64> {
@@ -672,7 +1167,10 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     let mut output_schema_file: Option<String> = None;
     let mut turn_extra_json: Option<String> = None;
     let mut resume_target: Option<ResumeTarget> = None;
+    let mut sessions = false;
+    let mut sessions_all = false;
     let mut final_response_only = false;
+    let mut json_output = false;
     let mut transport_mode = TransportMode::WebSocket;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
@@ -686,6 +1184,24 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--help" || arg == "-h" {
                 return Ok(ParsedCommand::Help);
+            }
+            if arg == "sessions" || arg == "--sessions" {
+                if sessions {
+                    return Err(SparkError::Usage(
+                        "sessions may only be provided once".to_string(),
+                    ));
+                }
+                sessions = true;
+                continue;
+            }
+            if arg == "--all" {
+                if sessions_all {
+                    return Err(SparkError::Usage(
+                        "--all may only be provided once".to_string(),
+                    ));
+                }
+                sessions_all = true;
+                continue;
             }
             if arg == "-c" || arg == "--continue" {
                 set_resume_target(&mut resume_target, ResumeTarget::Last)?;
@@ -1044,6 +1560,17 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 set_string_option_once(&mut output_schema_file, raw, "--output-schema-file")?;
                 continue;
             }
+            if arg == "--output-schema" {
+                let raw = iter.next().ok_or_else(|| {
+                    SparkError::Usage("missing value for --output-schema".to_string())
+                })?;
+                set_string_option_once(&mut output_schema_file, &raw, "--output-schema")?;
+                continue;
+            }
+            if let Some(raw) = arg.strip_prefix("--output-schema=") {
+                set_string_option_once(&mut output_schema_file, raw, "--output-schema")?;
+                continue;
+            }
             if arg == "--turn-extra-json" {
                 let raw = iter.next().ok_or_else(|| {
                     SparkError::Usage("missing value for --turn-extra-json".to_string())
@@ -1062,6 +1589,15 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                     ));
                 }
                 final_response_only = true;
+                continue;
+            }
+            if arg == "--json" {
+                if json_output {
+                    return Err(SparkError::Usage(
+                        "--json may only be provided once".to_string(),
+                    ));
+                }
+                json_output = true;
                 continue;
             }
             if arg == "--stdio" {
@@ -1087,9 +1623,45 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         ));
     }
 
+    if sessions_all && !sessions {
+        return Err(SparkError::Usage(
+            "--all can only be used with the sessions command".to_string(),
+        ));
+    }
+
+    if sessions {
+        if !prompt_parts.is_empty() {
+            return Err(SparkError::Usage(
+                "sessions does not accept prompt arguments".to_string(),
+            ));
+        }
+        if resume_target.is_some() {
+            return Err(SparkError::Usage(
+                "sessions cannot be used with --continue or --resume".to_string(),
+            ));
+        }
+        if final_response_only {
+            return Err(SparkError::Usage(
+                "sessions cannot be used with --final-response".to_string(),
+            ));
+        }
+    }
+
     if output_schema_json.is_some() && output_schema_file.is_some() {
         return Err(SparkError::Usage(
-            "only one of --output-schema-json and --output-schema-file may be provided".to_string(),
+            "only one of --output-schema-json, --output-schema-file, and --output-schema may be provided".to_string(),
+        ));
+    }
+
+    if json_output && final_response_only {
+        return Err(SparkError::Usage(
+            "--json cannot be used with --final-response".to_string(),
+        ));
+    }
+
+    if sessions && json_output {
+        return Err(SparkError::Usage(
+            "sessions cannot be used with --json".to_string(),
         ));
     }
 
@@ -1122,7 +1694,10 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         output_schema_file,
         turn_extra_json,
         resume_target,
+        sessions,
+        sessions_all,
         final_response_only,
+        json_output,
         transport_mode,
         prompt_parts,
     }))
@@ -1839,6 +2414,67 @@ mod tests {
         );
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_sessions_command() {
+        let parsed =
+            parse_cli_args(vec!["sessions".to_string()].into_iter()).expect("parse sessions");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.sessions);
+        assert!(!cli.sessions_all);
+        assert!(cli.prompt_parts.is_empty());
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_sessions_flag() {
+        let parsed =
+            parse_cli_args(vec!["--sessions".to_string()].into_iter()).expect("parse --sessions");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.sessions);
+        assert!(!cli.sessions_all);
+        assert!(cli.prompt_parts.is_empty());
+        assert_eq!(cli.transport_mode, TransportMode::WebSocket);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_sessions_all_flag() {
+        let parsed = parse_cli_args(vec!["sessions".to_string(), "--all".to_string()].into_iter())
+            .expect("parse sessions --all");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.sessions);
+        assert!(cli.sessions_all);
+        assert!(cli.prompt_parts.is_empty());
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_all_without_sessions() {
+        let error = parse_cli_args(vec!["--all".to_string(), "hello".to_string()].into_iter())
+            .expect_err("--all without sessions");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_sessions_with_prompt() {
+        let error = parse_cli_args(vec!["sessions".to_string(), "hello".to_string()].into_iter())
+            .expect_err("sessions prompt conflict");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn crop_preview_text_truncates_and_normalizes_whitespace() {
+        let preview = crop_preview_text("hello   world from   spark", 12);
+        assert_eq!(preview, "hello world ...");
     }
 
     #[test]

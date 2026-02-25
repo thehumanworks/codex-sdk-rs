@@ -379,6 +379,16 @@ impl LoginAccountParams {
             extra: serde_json::Map::new(),
         }
     }
+
+    pub fn chatgpt(id_token: impl Into<String>, access_token: impl Into<String>) -> Self {
+        Self {
+            login_type: "chatgpt".to_string(),
+            api_key: None,
+            id_token: Some(id_token.into()),
+            access_token: Some(access_token.into()),
+            extra: serde_json::Map::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
