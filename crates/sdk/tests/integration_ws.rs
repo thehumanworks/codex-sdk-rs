@@ -61,7 +61,7 @@ fn isolated_ws_env() -> HashMap<String, String> {
 async fn connect_initialized_ws_client(
     url: &str,
 ) -> Result<CodexClient, Box<dyn std::error::Error>> {
-    let client = CodexClient::connect_ws(WsConfig {
+    let client = CodexClient::manage_and_connect_ws(WsConfig {
         url: url.to_string(),
         env: isolated_ws_env(),
         options: ClientOptions::default(),
@@ -141,4 +141,19 @@ async fn ws_client_start_thread_runs_and_streams() -> Result<(), Box<dyn std::er
     assert!(saw_terminal, "expected streamed turn completion event");
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_connect_ws_does_not_start_daemon() {
+    let url = "ws://127.0.0.1:4234"; // Random unused port
+    let config = WsConfig {
+        url: url.to_string(),
+        env: HashMap::new(),
+        options: ClientOptions::default(),
+    };
+    let result = CodexClient::connect_ws(config).await;
+    assert!(
+        result.is_err(),
+        "Expected connect_ws to fail without manage_and_connect_ws"
+    );
 }

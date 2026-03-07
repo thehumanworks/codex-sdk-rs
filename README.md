@@ -12,8 +12,8 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 - `stdio`: spawn `codex app-server` locally.
 - `ws` (always enabled): websocket transport with loopback daemon management.
-  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), the SDK reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
-  - Non-loopback URLs remain connect-only (no process management).
+  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), `manage_and_connect_ws` reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
+  - Use `connect_ws` to connect directly without any process management (useful for existing public or loopback URLs).
   - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
 
 ## Quickstart (stdio)
@@ -143,7 +143,7 @@ use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 use std::collections::HashMap;
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = CodexClient::connect_ws(WsConfig {
+let client = CodexClient::manage_and_connect_ws(WsConfig {
     url: "ws://127.0.0.1:4222".to_string(),
     env: HashMap::new(),
     options: ClientOptions::default(),
@@ -218,6 +218,12 @@ By default, Spark sets Codex `cwd` to the current shell working directory where 
 cargo run -p spark -- --cwd /path/to/project "Summarize this repository in one sentence."
 ```
 
+Use `--no-daemon` to connect to a websocket URL without spawning a local daemon process:
+
+```bash
+cargo run -p spark -- --no-daemon "Summarize this repository in one sentence."
+```
+
 Use `--stdio` to force app-server stdio transport instead:
 
 ```bash
@@ -254,7 +260,7 @@ cargo run -p spark -- --resume thread_123 "Continue from that session."
 
 Additional optional config flags:
 
-- transport/session: `--ws-url`, `--stdio`, `--continue`, `--resume`
+- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`
 - model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`

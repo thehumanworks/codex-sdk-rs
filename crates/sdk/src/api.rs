@@ -875,6 +875,11 @@ impl Codex {
         Ok(Self::from_client(client))
     }
 
+    pub async fn manage_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {
+        let client = CodexClient::manage_and_connect_ws(config).await?;
+        Ok(Self::from_client(client))
+    }
+
     pub fn start_thread(&self, options: ThreadOptions) -> Thread {
         Thread {
             codex: self.clone(),

@@ -41,6 +41,7 @@ Options:
   --agent NAME                     Load ~/.codex/config.toml [agents.NAME]
   --cwd PATH                       Set Codex working directory (default: current shell directory)
   --ws-url URL                     Set websocket URL (default: ws://127.0.0.1:4222)
+  --no-daemon                      Do not manage or spawn a local websocket app-server daemon
   --stdio                          Use app-server stdio transport instead of websocket
   --model MODEL                    Override model (default: gpt-5.3-codex-spark)
   --model-provider PROVIDER        Override model provider
@@ -95,6 +96,7 @@ enum TransportMode {
 
 #[derive(Debug)]
 struct CliArgs {
+    no_daemon: bool,
     agent: Option<String>,
     working_directory: Option<String>,
     websocket_url: Option<String>,
@@ -270,6 +272,7 @@ async fn run() -> Result<(), SparkError> {
         json_output,
         transport_mode,
         prompt_parts,
+        no_daemon: _,
     } = cli;
 
     let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
@@ -284,7 +287,7 @@ async fn run() -> Result<(), SparkError> {
             Some(cwd)
         };
         let codex = match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url).await?,
+            TransportMode::WebSocket => connect_ws_codex(&websocket_url, cli.no_daemon).await?,
             TransportMode::Stdio => spawn_stdio_codex().await?,
         };
         list_sessions(&codex, cwd_filter.as_deref()).await?;
@@ -292,9 +295,12 @@ async fn run() -> Result<(), SparkError> {
     }
 
     let websocket_url_for_connect = websocket_url.clone();
+    let no_daemon_for_connect = cli.no_daemon;
     let connect_task = tokio::spawn(async move {
         match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url_for_connect).await,
+            TransportMode::WebSocket => {
+                connect_ws_codex(&websocket_url_for_connect, no_daemon_for_connect).await
+            }
             TransportMode::Stdio => spawn_stdio_codex().await,
         }
     });
@@ -686,13 +692,17 @@ fn thread_item_to_json(item: &ThreadItem) -> Value {
     }
 }
 
-async fn connect_ws_codex(url: &str) -> Result<Codex, SparkError> {
-    let client = CodexClient::connect_ws(WsConfig {
+async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, SparkError> {
+    let config = WsConfig {
         url: url.to_string(),
         env: Default::default(),
         options: ClientOptions::default(),
-    })
-    .await?;
+    };
+    let client = if no_daemon {
+        CodexClient::connect_ws(config).await?
+    } else {
+        CodexClient::manage_and_connect_ws(config).await?
+    };
     Ok(client.as_api())
 }
 
@@ -1171,6 +1181,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     let mut sessions_all = false;
     let mut final_response_only = false;
     let mut json_output = false;
+    let mut no_daemon = false;
     let mut transport_mode = TransportMode::WebSocket;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
@@ -1600,6 +1611,10 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 json_output = true;
                 continue;
             }
+            if arg == "--no-daemon" {
+                no_daemon = true;
+                continue;
+            }
             if arg == "--stdio" {
                 if transport_mode == TransportMode::Stdio {
                     return Err(SparkError::Usage(
@@ -1666,6 +1681,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     }
 
     Ok(ParsedCommand::Run(CliArgs {
+        no_daemon,
         agent,
         working_directory,
         websocket_url,

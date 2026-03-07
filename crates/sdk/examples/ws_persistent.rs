@@ -5,7 +5,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use codex_app_server_sdk::api::{ThreadEvent, ThreadOptions, TurnOptions};
     use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 
-    let client = CodexClient::connect_ws(WsConfig {
+    let client = CodexClient::manage_and_connect_ws(WsConfig {
         url: "ws://127.0.0.1:4222".to_string(),
         env: HashMap::new(),
         options: ClientOptions::default(),
