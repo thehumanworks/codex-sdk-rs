@@ -28,12 +28,13 @@
 - `cargo test -p spark --test integration_spark -- --nocapture`: real `spark` CLI tests (resume/continue flows).
 - `cargo run -p codex-app-server-sdk --example raw_fallback`: raw RPC smoke test.
 - `cargo run -p codex-app-server-sdk --example turn_start_stream`: live turn streaming test.
-- `cargo run -p spark -- "..."`: one-shot run (streamed by default) with defaults `gpt-5.3-codex-spark` + `xhigh` (override via flags).
-- `cargo run -p spark -- --stdio "..."`: one-shot run over stdio transport instead of default websocket.
-- `cargo run -p spark -- --cwd <path> "..."`: one-shot run with explicit Codex working directory.
-- `cargo run -p spark -- --final-response "..."`: one-shot run that only prints final response content.
-- `cargo run -p spark -- --continue "..."`: continue the most recent recorded session.
-- `cargo run -p spark -- --resume <session_id> "..."`: resume a specific session id.
+- `cargo run -p spark -- exec "..."`: one-shot run (streamed by default) with defaults `gpt-5.3-codex-spark` + `xhigh` (override via flags).
+- `cargo run -p spark -- exec --stdio "..."`: one-shot run over stdio transport instead of default websocket.
+- `cargo run -p spark -- exec --cwd <path> "..."`: one-shot run with explicit Codex working directory.
+- `cargo run -p spark -- exec --final-response "..."`: one-shot run that only prints final response content.
+- `cargo run -p spark -- exec --continue "..."`: continue the most recent recorded session.
+- `cargo run -p spark -- exec --resume <session_id> "..."`: resume a specific session id.
+- `cargo run -p spark -- start`: ensure the default websocket daemon is running and exit.
 
 ## CI Merge Gate (Source of Truth)
 - Required for merge:
@@ -128,14 +129,15 @@
 - `crates/sdk/examples/auth_api_key.rs` requires `OPENAI_API_KEY`.
 - Loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
+- Use `connect_ws` to connect to a running websocket server, and `start_and_connect_ws` to manage a local daemon for loopback connections.
 - `Codex` forwards the full typed RPC surface (thread lifecycle, turn controls, auth/config, skills, MCP, review, and raw fallback) after ensuring handshake readiness.
 - High-level API includes final-response shortcuts: `Thread::ask(...)`, `Codex::ask(...)`, and `Codex::ask_with_options(...)`, which return only the final agent message text.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
 - Use `TurnOptions::builder()` for per-turn control and overrides; it covers `output_schema` plus per-turn `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox policy, collaboration mode, and raw extra fields.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
-- The `spark` binary supports fresh runs and session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and defaults model + reasoning to (`gpt-5.3-codex-spark`, `xhigh`) while allowing optional overrides (`--model`, `--reasoning-effort`, and related config flags).
+- The `spark` binary exposes explicit commands: `exec` for one-shot runs, `start` to ensure the websocket daemon is running, and `sessions` for recorded-session listing. `spark exec` supports session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), reads websocket URL from `--ws-url` or `CODEX_WEB_SERVER_URL`, sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and defaults model + reasoning to (`gpt-5.3-codex-spark`, `xhigh`) while allowing optional overrides (`--model`, `--reasoning-effort`, and related config flags).
 - For websocket v2 compatibility, route search/sandbox workspace-write tuning through config overrides (`web_search`, `sandbox_workspace_write.network_access`, `sandbox_workspace_write.writable_roots`) and avoid relying on legacy extra fields like `webSearchEnabled`, `networkAccessEnabled`, `additionalDirectories`, or `skipGitRepoCheck` because app-server thread/turn params ignore them.
-- `spark --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
+- `spark exec --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
 - On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run -p spark -- ...` or `./target/release/spark ...` to run the repository binary.
 
 ## Critical Paths and Review Focus

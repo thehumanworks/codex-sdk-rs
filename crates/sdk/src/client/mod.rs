@@ -181,6 +181,11 @@ impl CodexClient {
     }
 
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
+        let handle = connect_ws_transport(&config.url).await?;
+        Ok(Self::from_transport(handle, config.options.default_timeout))
+    }
+
+    pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         ensure_local_ws_app_server(&config.url, &config.env).await?;
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))

@@ -12,8 +12,8 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 - `stdio`: spawn `codex app-server` locally.
 - `ws` (always enabled): websocket transport with loopback daemon management.
-  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), the SDK reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
-  - Non-loopback URLs remain connect-only (no process management).
+  - For loopback URLs (`ws://127.0.0.1:*`, `ws://[::1]:*`, `ws://localhost:*`), `start_and_connect_ws` reuses an existing app-server or auto-starts `codex app-server --listen ...` and leaves it running.
+  - Use `connect_ws` to connect directly without any process management (useful for existing public or loopback URLs).
   - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
 
 ## Quickstart (stdio)
@@ -143,7 +143,7 @@ use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 use std::collections::HashMap;
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = CodexClient::connect_ws(WsConfig {
+let client = CodexClient::start_and_connect_ws(WsConfig {
     url: "ws://127.0.0.1:4222".to_string(),
     env: HashMap::new(),
     options: ClientOptions::default(),
@@ -205,56 +205,74 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## `spark` CLI
 
-The repository includes a `spark` binary for one-shot runs (streamed by default).
-By default it connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
+The repository includes a `spark` binary with explicit `exec`, `start`, and `sessions` commands.
+By default `spark exec` connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
 
 ```bash
-cargo run -p spark -- "Summarize this repository in one sentence."
+cargo run -p spark -- exec "Summarize this repository in one sentence."
+```
+
+Use `spark start` to ensure the websocket daemon is running and exit:
+
+```bash
+cargo run -p spark -- start
 ```
 
 By default, Spark sets Codex `cwd` to the current shell working directory where `spark` is invoked. Use `--cwd` to override:
 
 ```bash
-cargo run -p spark -- --cwd /path/to/project "Summarize this repository in one sentence."
+cargo run -p spark -- exec --cwd /path/to/project "Summarize this repository in one sentence."
 ```
 
-Use `--stdio` to force app-server stdio transport instead:
+`spark exec` resolves its websocket URL in this order: `--ws-url`, `CODEX_WEB_SERVER_URL`, then the default `ws://127.0.0.1:4222`.
 
 ```bash
-cargo run -p spark -- --stdio "Summarize this repository in one sentence."
+CODEX_WEB_SERVER_URL=ws://127.0.0.1:5222 cargo run -p spark -- exec "Summarize this repository in one sentence."
 ```
 
-Use `--final-response` to print only the final message content:
+Use `--no-daemon` with `spark exec` to connect to a websocket URL without spawning a local daemon process:
 
 ```bash
-cargo run -p spark -- --final-response "Summarize this repository in one sentence."
+cargo run -p spark -- exec --no-daemon "Summarize this repository in one sentence."
+```
+
+Use `--stdio` with `spark exec` to force app-server stdio transport instead:
+
+```bash
+cargo run -p spark -- exec --stdio "Summarize this repository in one sentence."
+```
+
+Use `--final-response` with `spark exec` to print only the final message content:
+
+```bash
+cargo run -p spark -- exec --final-response "Summarize this repository in one sentence."
 ```
 
 Resume the most recent session (`codex resume --last` equivalent):
 
 ```bash
-cargo run -p spark -- --continue "Follow up on the previous answer."
+cargo run -p spark -- exec --continue "Follow up on the previous answer."
 ```
 
 Resume a specific session id:
 
 ```bash
-cargo run -p spark -- --resume thread_123 "Continue from that session."
+cargo run -p spark -- exec --resume thread_123 "Continue from that session."
 ```
 
 `spark` defaults to:
 
 - model: `gpt-5.3-codex-spark` (override: `--model`)
 - reasoning effort: `xhigh` (override: `--reasoning-effort`)
-- websocket transport (`ws://127.0.0.1:4222`) unless `--stdio` is provided
+- websocket transport (`ws://127.0.0.1:4222`) unless `spark exec --stdio` is provided
 - Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
 - each completed `agentMessage` is newline-terminated so consecutive messages do not run together
-- `--continue` and `--resume <session_id>` are mutually exclusive
+- `spark exec --continue` and `spark exec --resume <session_id>` are mutually exclusive
 - transport initialization is started early and overlapped with prompt/config resolution to reduce first-message latency
 
 Additional optional config flags:
 
-- transport/session: `--ws-url`, `--stdio`, `--continue`, `--resume`
+- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_WEB_SERVER_URL`
 - model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`
@@ -266,6 +284,7 @@ Example with explicit overrides:
 
 ```bash
 cargo run -p spark -- \
+  exec \
   --model gpt-5.3-codex \
   --reasoning-effort high \
   --approval-policy on-request \

@@ -19,28 +19,34 @@ use thiserror::Error;
 const APP_NAME: &str = "spark";
 const MODEL: &str = "gpt-5.3-codex-spark";
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
+const CODEX_WEB_SERVER_URL_ENV: &str = "CODEX_WEB_SERVER_URL";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 const SESSION_PREVIEW_CHAR_LIMIT: usize = 96;
 
 const USAGE: &str = "\
 Usage:
-  spark [OPTIONS] [PROMPT...]
+  spark exec [OPTIONS] [PROMPT...]
+  spark start [--ws-url URL]
   spark sessions [--all] [--ws-url URL | --stdio]
 
-Runs one turn with:
+`spark exec` runs one turn with:
   model default: gpt-5.3-codex-spark
   reasoning effort default: xhigh
   transport default: websocket (ws://127.0.0.1:4222)
 
 Commands:
+  exec                             Run one turn with a prompt argument or stdin
+  start                            Ensure the websocket daemon is running, then exit
   sessions                         List recorded sessions ordered by last activity
                                    (default: sessions from current directory; use --all for all)
 
 Options:
   --agent NAME                     Load ~/.codex/config.toml [agents.NAME]
   --cwd PATH                       Set Codex working directory (default: current shell directory)
-  --ws-url URL                     Set websocket URL (default: ws://127.0.0.1:4222)
+  --ws-url URL                     Set websocket URL (default: ws://127.0.0.1:4222;
+                                   exec/start also read CODEX_WEB_SERVER_URL)
+  --no-daemon                      Do not manage or spawn a local websocket app-server daemon
   --stdio                          Use app-server stdio transport instead of websocket
   --model MODEL                    Override model (default: gpt-5.3-codex-spark)
   --model-provider PROVIDER        Override model provider
@@ -78,7 +84,7 @@ Options:
   --all                            Show all sessions (used with sessions command)
   -h, --help                       Show this help
 
-If PROMPT is omitted, spark reads the prompt from stdin.
+If PROMPT is omitted, `spark exec` reads the prompt from stdin.
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,8 +99,17 @@ enum TransportMode {
     Stdio,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandKind {
+    Exec,
+    Start,
+    Sessions,
+}
+
 #[derive(Debug)]
 struct CliArgs {
+    command_kind: CommandKind,
+    no_daemon: bool,
     agent: Option<String>,
     working_directory: Option<String>,
     websocket_url: Option<String>,
@@ -123,7 +138,6 @@ struct CliArgs {
     output_schema_file: Option<String>,
     turn_extra_json: Option<String>,
     resume_target: Option<ResumeTarget>,
-    sessions: bool,
     sessions_all: bool,
     final_response_only: bool,
     json_output: bool,
@@ -236,6 +250,7 @@ async fn run() -> Result<(), SparkError> {
     };
 
     let CliArgs {
+        command_kind,
         agent,
         working_directory,
         websocket_url,
@@ -264,16 +279,16 @@ async fn run() -> Result<(), SparkError> {
         output_schema_file,
         turn_extra_json,
         resume_target,
-        sessions: show_sessions,
         sessions_all,
         final_response_only,
         json_output,
         transport_mode,
         prompt_parts,
+        no_daemon,
     } = cli;
 
-    let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
-    if show_sessions {
+    if command_kind == CommandKind::Sessions {
+        let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
         let cwd_filter = if sessions_all {
             None
         } else {
@@ -284,17 +299,33 @@ async fn run() -> Result<(), SparkError> {
             Some(cwd)
         };
         let codex = match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url).await?,
+            TransportMode::WebSocket => connect_ws_codex(&websocket_url, no_daemon).await?,
             TransportMode::Stdio => spawn_stdio_codex().await?,
         };
         list_sessions(&codex, cwd_filter.as_deref()).await?;
         return Ok(());
     }
 
+    let websocket_url = if transport_mode == TransportMode::WebSocket {
+        let env_websocket_url = env::var(CODEX_WEB_SERVER_URL_ENV).ok();
+        resolve_websocket_url(websocket_url.as_deref(), env_websocket_url.as_deref())?
+    } else {
+        DEFAULT_WS_URL.to_string()
+    };
+
+    if command_kind == CommandKind::Start {
+        start_ws_server(&websocket_url).await?;
+        println!("WebSocket server ready at {websocket_url}");
+        return Ok(());
+    }
+
     let websocket_url_for_connect = websocket_url.clone();
+    let no_daemon_for_connect = no_daemon;
     let connect_task = tokio::spawn(async move {
         match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url_for_connect).await,
+            TransportMode::WebSocket => {
+                connect_ws_codex(&websocket_url_for_connect, no_daemon_for_connect).await
+            }
             TransportMode::Stdio => spawn_stdio_codex().await,
         }
     });
@@ -686,14 +717,28 @@ fn thread_item_to_json(item: &ThreadItem) -> Value {
     }
 }
 
-async fn connect_ws_codex(url: &str) -> Result<Codex, SparkError> {
-    let client = CodexClient::connect_ws(WsConfig {
+async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, SparkError> {
+    let config = WsConfig {
         url: url.to_string(),
         env: Default::default(),
         options: ClientOptions::default(),
-    })
-    .await?;
+    };
+    let client = if no_daemon {
+        CodexClient::connect_ws(config).await?
+    } else {
+        CodexClient::start_and_connect_ws(config).await?
+    };
     Ok(client.as_api())
+}
+
+async fn start_ws_server(url: &str) -> Result<(), SparkError> {
+    let config = WsConfig {
+        url: url.to_string(),
+        env: Default::default(),
+        options: ClientOptions::default(),
+    };
+    let _client = CodexClient::start_and_connect_ws(config).await?;
+    Ok(())
 }
 
 async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
@@ -1139,6 +1184,7 @@ fn ensure_message_separator<W: Write>(
 }
 
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
+    let mut command_kind: Option<CommandKind> = None;
     let mut agent: Option<String> = None;
     let mut working_directory: Option<String> = None;
     let mut websocket_url: Option<String> = None;
@@ -1171,6 +1217,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     let mut sessions_all = false;
     let mut final_response_only = false;
     let mut json_output = false;
+    let mut no_daemon = false;
     let mut transport_mode = TransportMode::WebSocket;
     let mut prompt_parts = Vec::new();
     let mut parse_options = true;
@@ -1185,12 +1232,16 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--help" || arg == "-h" {
                 return Ok(ParsedCommand::Help);
             }
+            if arg == "exec" {
+                set_command_kind(&mut command_kind, CommandKind::Exec)?;
+                continue;
+            }
+            if arg == "start" {
+                set_command_kind(&mut command_kind, CommandKind::Start)?;
+                continue;
+            }
             if arg == "sessions" || arg == "--sessions" {
-                if sessions {
-                    return Err(SparkError::Usage(
-                        "sessions may only be provided once".to_string(),
-                    ));
-                }
+                set_command_kind(&mut command_kind, CommandKind::Sessions)?;
                 sessions = true;
                 continue;
             }
@@ -1600,6 +1651,10 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 json_output = true;
                 continue;
             }
+            if arg == "--no-daemon" {
+                no_daemon = true;
+                continue;
+            }
             if arg == "--stdio" {
                 if transport_mode == TransportMode::Stdio {
                     return Err(SparkError::Usage(
@@ -1614,8 +1669,29 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
         }
 
-        prompt_parts.push(arg);
+        match command_kind {
+            Some(CommandKind::Exec) => prompt_parts.push(arg),
+            Some(CommandKind::Start) => {
+                return Err(SparkError::Usage(
+                    "start does not accept prompt arguments".to_string(),
+                ));
+            }
+            Some(CommandKind::Sessions) => {
+                return Err(SparkError::Usage(
+                    "sessions does not accept prompt arguments".to_string(),
+                ));
+            }
+            None => {
+                return Err(SparkError::Usage(
+                    "missing command; expected one of: exec, start, sessions".to_string(),
+                ));
+            }
+        }
     }
+
+    let command_kind = command_kind.ok_or_else(|| {
+        SparkError::Usage("missing command; expected one of: exec, start, sessions".to_string())
+    })?;
 
     if transport_mode == TransportMode::Stdio && websocket_url.is_some() {
         return Err(SparkError::Usage(
@@ -1623,27 +1699,71 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         ));
     }
 
-    if sessions_all && !sessions {
+    if sessions_all && command_kind != CommandKind::Sessions {
         return Err(SparkError::Usage(
             "--all can only be used with the sessions command".to_string(),
         ));
     }
 
-    if sessions {
-        if !prompt_parts.is_empty() {
-            return Err(SparkError::Usage(
-                "sessions does not accept prompt arguments".to_string(),
-            ));
+    match command_kind {
+        CommandKind::Exec => {}
+        CommandKind::Sessions => {
+            if resume_target.is_some() {
+                return Err(SparkError::Usage(
+                    "sessions cannot be used with --continue or --resume".to_string(),
+                ));
+            }
+            if final_response_only {
+                return Err(SparkError::Usage(
+                    "sessions cannot be used with --final-response".to_string(),
+                ));
+            }
         }
-        if resume_target.is_some() {
-            return Err(SparkError::Usage(
-                "sessions cannot be used with --continue or --resume".to_string(),
-            ));
-        }
-        if final_response_only {
-            return Err(SparkError::Usage(
-                "sessions cannot be used with --final-response".to_string(),
-            ));
+        CommandKind::Start => {
+            if transport_mode == TransportMode::Stdio {
+                return Err(SparkError::Usage(
+                    "start cannot be used with --stdio".to_string(),
+                ));
+            }
+            if no_daemon {
+                return Err(SparkError::Usage(
+                    "start cannot be used with --no-daemon".to_string(),
+                ));
+            }
+            if agent.is_some()
+                || working_directory.is_some()
+                || model.is_some()
+                || model_provider.is_some()
+                || reasoning_effort.is_some()
+                || reasoning_summary.is_some()
+                || model_verbosity.is_some()
+                || config_profile.is_some()
+                || approval_policy.is_some()
+                || sandbox_mode.is_some()
+                || sandbox_policy_json.is_some()
+                || sandbox_network_access_enabled.is_some()
+                || !sandbox_writable_roots.is_empty()
+                || web_search_mode.is_some()
+                || dynamic_tools_json.is_some()
+                || personality.is_some()
+                || base_instructions.is_some()
+                || developer_instructions.is_some()
+                || ephemeral.is_some()
+                || experimental_raw_events.is_some()
+                || persist_extended_history.is_some()
+                || !config_entries.is_empty()
+                || config_json.is_some()
+                || output_schema_json.is_some()
+                || output_schema_file.is_some()
+                || turn_extra_json.is_some()
+                || resume_target.is_some()
+                || final_response_only
+                || json_output
+            {
+                return Err(SparkError::Usage(
+                    "start only supports websocket startup options such as --ws-url".to_string(),
+                ));
+            }
         }
     }
 
@@ -1666,6 +1786,8 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     }
 
     Ok(ParsedCommand::Run(CliArgs {
+        command_kind,
+        no_daemon,
         agent,
         working_directory,
         websocket_url,
@@ -1694,7 +1816,6 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         output_schema_file,
         turn_extra_json,
         resume_target,
-        sessions,
         sessions_all,
         final_response_only,
         json_output,
@@ -1711,6 +1832,39 @@ fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), Spa
     }
     *slot = Some(normalize_working_directory(raw)?);
     Ok(())
+}
+
+fn set_command_kind(slot: &mut Option<CommandKind>, value: CommandKind) -> Result<(), SparkError> {
+    if slot.is_some() {
+        return Err(SparkError::Usage(
+            "only one command may be provided".to_string(),
+        ));
+    }
+    *slot = Some(value);
+    Ok(())
+}
+
+fn resolve_websocket_url(
+    explicit: Option<&str>,
+    env_websocket_url: Option<&str>,
+) -> Result<String, SparkError> {
+    if let Some(url) = explicit {
+        return normalize_websocket_url(url, "--ws-url");
+    }
+    if let Some(url) = env_websocket_url {
+        return normalize_websocket_url(url, CODEX_WEB_SERVER_URL_ENV);
+    }
+    Ok(DEFAULT_WS_URL.to_string())
+}
+
+fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, SparkError> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(SparkError::Usage(format!(
+            "value for {source} cannot be empty"
+        )));
+    }
+    Ok(value.to_string())
 }
 
 fn set_resume_target(
@@ -2262,6 +2416,7 @@ mod tests {
     fn parse_cli_args_supports_agent_flag_and_prompt() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--agent".to_string(),
                 "writer".to_string(),
                 "hello".to_string(),
@@ -2286,6 +2441,7 @@ mod tests {
     fn parse_cli_args_supports_equals_form() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--agent=writer".to_string(),
                 "hi".to_string(),
                 "there".to_string(),
@@ -2310,6 +2466,7 @@ mod tests {
     fn parse_cli_args_supports_final_response_flag() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--final-response".to_string(),
                 "hello".to_string(),
                 "world".to_string(),
@@ -2333,6 +2490,7 @@ mod tests {
     fn parse_cli_args_supports_cwd_flag() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--cwd".to_string(),
                 "/tmp/project".to_string(),
                 "hello".to_string(),
@@ -2351,9 +2509,15 @@ mod tests {
 
     #[test]
     fn parse_cli_args_supports_cwd_equals_form() {
-        let parsed =
-            parse_cli_args(vec!["--cwd=/tmp/project".to_string(), "hello".to_string()].into_iter())
-                .expect("parse args");
+        let parsed = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--cwd=/tmp/project".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
 
         let ParsedCommand::Run(cli) = parsed else {
             panic!("expected run command");
@@ -2365,8 +2529,10 @@ mod tests {
 
     #[test]
     fn parse_cli_args_supports_continue_short_flag() {
-        let parsed = parse_cli_args(vec!["-c".to_string(), "hello".to_string()].into_iter())
-            .expect("parse args");
+        let parsed = parse_cli_args(
+            vec!["exec".to_string(), "-c".to_string(), "hello".to_string()].into_iter(),
+        )
+        .expect("parse args");
 
         let ParsedCommand::Run(cli) = parsed else {
             panic!("expected run command");
@@ -2379,9 +2545,15 @@ mod tests {
 
     #[test]
     fn parse_cli_args_supports_continue_long_flag() {
-        let parsed =
-            parse_cli_args(vec!["--continue".to_string(), "hello".to_string()].into_iter())
-                .expect("parse args");
+        let parsed = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--continue".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse args");
 
         let ParsedCommand::Run(cli) = parsed else {
             panic!("expected run command");
@@ -2396,6 +2568,7 @@ mod tests {
     fn parse_cli_args_supports_resume_short_flag() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "-r".to_string(),
                 "session_123".to_string(),
                 "hello".to_string(),
@@ -2424,7 +2597,7 @@ mod tests {
             panic!("expected run command");
         };
 
-        assert!(cli.sessions);
+        assert_eq!(cli.command_kind, CommandKind::Sessions);
         assert!(!cli.sessions_all);
         assert!(cli.prompt_parts.is_empty());
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
@@ -2438,7 +2611,7 @@ mod tests {
             panic!("expected run command");
         };
 
-        assert!(cli.sessions);
+        assert_eq!(cli.command_kind, CommandKind::Sessions);
         assert!(!cli.sessions_all);
         assert!(cli.prompt_parts.is_empty());
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
@@ -2452,9 +2625,68 @@ mod tests {
             panic!("expected run command");
         };
 
-        assert!(cli.sessions);
+        assert_eq!(cli.command_kind, CommandKind::Sessions);
         assert!(cli.sessions_all);
         assert!(cli.prompt_parts.is_empty());
+    }
+
+    #[test]
+    fn parse_cli_args_supports_exec_command_and_strips_keyword() {
+        let parsed = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--final-response".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse exec");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.final_response_only);
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_start_command_without_prompt() {
+        let parsed = parse_cli_args(vec!["start".to_string()].into_iter()).expect("parse start");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert!(cli.prompt_parts.is_empty());
+        assert_eq!(cli.command_kind, CommandKind::Start);
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_start_with_stdio() {
+        let error = parse_cli_args(vec!["start".to_string(), "--stdio".to_string()].into_iter())
+            .expect_err("start should reject stdio");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_start_with_no_daemon() {
+        let error =
+            parse_cli_args(vec!["start".to_string(), "--no-daemon".to_string()].into_iter())
+                .expect_err("start should reject no-daemon");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_bare_prompt_without_exec() {
+        let error = parse_cli_args(vec!["hello".to_string()].into_iter())
+            .expect_err("bare prompt should be rejected");
+        assert!(matches!(error, SparkError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_start_with_prompt_arguments() {
+        let error = parse_cli_args(vec!["start".to_string(), "hello".to_string()].into_iter())
+            .expect_err("start should reject prompt args");
+        assert!(matches!(error, SparkError::Usage(_)));
     }
 
     #[test]
@@ -2478,9 +2710,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_websocket_url_prefers_explicit_value() {
+        let resolved =
+            resolve_websocket_url(Some("ws://127.0.0.1:5555"), Some("ws://127.0.0.1:4444"))
+                .expect("resolve explicit websocket url");
+        assert_eq!(resolved, "ws://127.0.0.1:5555");
+    }
+
+    #[test]
+    fn resolve_websocket_url_uses_env_when_flag_is_missing() {
+        let resolved =
+            resolve_websocket_url(None, Some("ws://127.0.0.1:4444")).expect("resolve env url");
+        assert_eq!(resolved, "ws://127.0.0.1:4444");
+    }
+
+    #[test]
+    fn resolve_websocket_url_falls_back_to_default() {
+        let resolved = resolve_websocket_url(None, None).expect("resolve default websocket url");
+        assert_eq!(resolved, DEFAULT_WS_URL);
+    }
+
+    #[test]
     fn parse_cli_args_supports_resume_equals_form() {
         let parsed = parse_cli_args(
-            vec!["--resume=session_123".to_string(), "hello".to_string()].into_iter(),
+            vec![
+                "exec".to_string(),
+                "--resume=session_123".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
         )
         .expect("parse args");
 
@@ -2500,6 +2758,7 @@ mod tests {
     fn parse_cli_args_supports_stdio_flag() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--stdio".to_string(),
                 "hello".to_string(),
                 "world".to_string(),
@@ -2520,6 +2779,7 @@ mod tests {
     fn parse_cli_args_supports_extended_configuration_flags() {
         let parsed = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--ws-url=ws://127.0.0.1:9999".to_string(),
                 "--model".to_string(),
                 "gpt-5-custom".to_string(),
@@ -2654,6 +2914,7 @@ mod tests {
     fn parse_cli_args_rejects_ws_url_with_stdio() {
         let error = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--stdio".to_string(),
                 "--ws-url".to_string(),
                 "ws://127.0.0.1:9000".to_string(),
@@ -2669,6 +2930,7 @@ mod tests {
     fn parse_cli_args_rejects_multiple_output_schema_sources() {
         let error = parse_cli_args(
             vec![
+                "exec".to_string(),
                 "--output-schema-json={\"type\":\"object\"}".to_string(),
                 "--output-schema-file".to_string(),
                 "/tmp/schema.json".to_string(),
