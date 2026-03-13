@@ -132,6 +132,40 @@ pub struct WsConfig {
     pub options: ClientOptions,
 }
 
+impl WsConfig {
+    pub fn new(
+        url: impl Into<String>,
+        env: HashMap<String, String>,
+        options: ClientOptions,
+    ) -> Self {
+        Self {
+            url: url.into(),
+            env,
+            options,
+        }
+    }
+
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        self.url = url.into();
+        self
+    }
+
+    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+}
+
+impl Default for WsConfig {
+    fn default() -> Self {
+        Self {
+            url: String::from("ws://127.0.0.1:4222"),
+            env: HashMap::new(),
+            options: ClientOptions::default(),
+        }
+    }
+}
+
 struct Inner {
     outbound: mpsc::Sender<Value>,
     pending: Mutex<PendingMap>,
@@ -187,6 +221,7 @@ impl CodexClient {
 
     pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         ensure_local_ws_app_server(&config.url, &config.env).await?;
+
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }
