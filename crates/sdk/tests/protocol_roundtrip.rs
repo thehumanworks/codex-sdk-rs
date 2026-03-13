@@ -69,6 +69,84 @@ fn parse_windows_sandbox_setup_completed_notification() {
 }
 
 #[test]
+fn parse_thread_lifecycle_notifications() {
+    let archived = parse_notification(
+        "thread/archived".to_string(),
+        json!({ "threadId": "thr_archived" }),
+    )
+    .expect("parse archived");
+    match archived {
+        ServerNotification::ThreadArchived(payload) => {
+            assert_eq!(payload.thread_id, "thr_archived");
+        }
+        _ => panic!("expected thread archived notification"),
+    }
+
+    let unarchived = parse_notification(
+        "thread/unarchived".to_string(),
+        json!({ "threadId": "thr_unarchived" }),
+    )
+    .expect("parse unarchived");
+    match unarchived {
+        ServerNotification::ThreadUnarchived(payload) => {
+            assert_eq!(payload.thread_id, "thr_unarchived");
+        }
+        _ => panic!("expected thread unarchived notification"),
+    }
+
+    let closed = parse_notification(
+        "thread/closed".to_string(),
+        json!({ "threadId": "thr_closed" }),
+    )
+    .expect("parse closed");
+    match closed {
+        ServerNotification::ThreadClosed(payload) => {
+            assert_eq!(payload.thread_id, "thr_closed");
+        }
+        _ => panic!("expected thread closed notification"),
+    }
+}
+
+#[test]
+fn parse_thread_status_changed_notification() {
+    let params = json!({
+        "threadId": "thr_123",
+        "status": {
+            "type": "active",
+            "activeFlags": ["waitingOnApproval"]
+        }
+    });
+    let event = parse_notification("thread/status/changed".to_string(), params).expect("parse");
+
+    match event {
+        ServerNotification::ThreadStatusChanged(payload) => {
+            assert_eq!(payload.thread_id, "thr_123");
+            let status = payload.status.expect("status payload");
+            assert_eq!(status.status_type.as_deref(), Some("active"));
+            assert_eq!(status.active_flags, vec!["waitingOnApproval".to_string()]);
+        }
+        _ => panic!("expected thread status changed notification"),
+    }
+}
+
+#[test]
+fn parse_server_request_resolved_notification() {
+    let event = parse_notification(
+        "serverRequest/resolved".to_string(),
+        json!({ "threadId": "thr_123", "requestId": 42 }),
+    )
+    .expect("parse");
+
+    match event {
+        ServerNotification::ServerRequestResolved(payload) => {
+            assert_eq!(payload.thread_id.as_deref(), Some("thr_123"));
+            assert_eq!(payload.request_id, RequestId::Integer(42));
+        }
+        _ => panic!("expected server request resolved notification"),
+    }
+}
+
+#[test]
 fn parse_fuzzy_file_search_notifications() {
     let updated_params = json!({ "sessionId": "sess_1", "matches": [] });
     let updated = parse_notification(

@@ -48,9 +48,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .await?;
     let mut last_agent_message: Option<String> = None;
+    let mut final_agent_message: Option<String> = None;
     while let Some(Ok(event)) = output_stream.next_event().await {
         if let ThreadEvent::ItemCompleted { item } = &event {
             if let ThreadItem::AgentMessage(agent_message) = item {
+                if agent_message.is_final_answer() {
+                    final_agent_message = Some(agent_message.text.clone());
+                }
                 last_agent_message = Some(agent_message.text.clone());
             }
         }
@@ -60,9 +64,11 @@ async fn main() -> anyhow::Result<()> {
     }
     println!(
         "{}",
-        last_agent_message
+        final_agent_message
             .as_ref()
-            .unwrap_or(&String::from("No agent message"))
+            .or(last_agent_message.as_ref())
+            .map(String::as_str)
+            .unwrap_or("No agent message")
     );
 
     Ok(())

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use codex_app_server_sdk::api::{
     ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary, Personality,
     SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
-    WebSearchMode,
+    UserMessageContentItem, WebSearchMode,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
@@ -635,10 +635,44 @@ async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
 
 fn thread_item_to_json(item: &ThreadItem) -> Value {
     match item {
-        ThreadItem::AgentMessage(msg) => serde_json::json!({
-            "type": "agentMessage",
-            "id": msg.id,
-            "text": msg.text,
+        ThreadItem::AgentMessage(msg) => {
+            let mut value = serde_json::json!({
+                "type": "agentMessage",
+                "id": msg.id,
+                "text": msg.text,
+            });
+            if let Some(phase) = msg.phase {
+                value["phase"] = Value::String(phase.as_str().to_string());
+            }
+            value
+        }
+        ThreadItem::UserMessage(msg) => {
+            let content: Vec<Value> = msg
+                .content
+                .iter()
+                .map(|entry| match entry {
+                    UserMessageContentItem::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    UserMessageContentItem::Image { url } => {
+                        serde_json::json!({ "type": "image", "url": url })
+                    }
+                    UserMessageContentItem::LocalImage { path } => {
+                        serde_json::json!({ "type": "localImage", "path": path })
+                    }
+                    UserMessageContentItem::Unknown(raw) => raw.clone(),
+                })
+                .collect();
+            serde_json::json!({
+                "type": "userMessage",
+                "id": msg.id,
+                "content": content,
+            })
+        }
+        ThreadItem::Plan(plan) => serde_json::json!({
+            "type": "plan",
+            "id": plan.id,
+            "text": plan.text,
         }),
         ThreadItem::Reasoning(r) => serde_json::json!({
             "type": "reasoning",
@@ -681,10 +715,50 @@ fn thread_item_to_json(item: &ThreadItem) -> Value {
             "error": mcp.error.as_ref().map(|e| &e.message),
             "status": format!("{:?}", mcp.status),
         }),
+        ThreadItem::DynamicToolCall(tool) => serde_json::json!({
+            "type": "dynamicToolCall",
+            "id": tool.id,
+            "tool": tool.tool,
+            "arguments": tool.arguments,
+            "status": tool.status,
+            "contentItems": tool.content_items,
+            "success": tool.success,
+            "durationMs": tool.duration_ms,
+        }),
+        ThreadItem::CollabToolCall(tool) => serde_json::json!({
+            "type": "collabToolCall",
+            "id": tool.id,
+            "tool": tool.tool,
+            "status": tool.status,
+            "senderThreadId": tool.sender_thread_id,
+            "receiverThreadId": tool.receiver_thread_id,
+            "newThreadId": tool.new_thread_id,
+            "prompt": tool.prompt,
+            "agentStatus": tool.agent_status,
+        }),
         ThreadItem::WebSearch(ws) => serde_json::json!({
             "type": "webSearch",
             "id": ws.id,
             "query": ws.query,
+        }),
+        ThreadItem::ImageView(image) => serde_json::json!({
+            "type": "imageView",
+            "id": image.id,
+            "path": image.path,
+        }),
+        ThreadItem::EnteredReviewMode(review) => serde_json::json!({
+            "type": "enteredReviewMode",
+            "id": review.id,
+            "review": review.review,
+        }),
+        ThreadItem::ExitedReviewMode(review) => serde_json::json!({
+            "type": "exitedReviewMode",
+            "id": review.id,
+            "review": review.review,
+        }),
+        ThreadItem::ContextCompaction(item) => serde_json::json!({
+            "type": "contextCompaction",
+            "id": item.id,
         }),
         ThreadItem::TodoList(todo) => {
             let items: Vec<Value> = todo
@@ -2980,6 +3054,27 @@ mod tests {
     fn normalize_agent_name_trims_toml_extension() {
         let normalized = normalize_agent_name("reviewer.toml").expect("normalized");
         assert_eq!(normalized, "reviewer");
+    }
+
+    #[test]
+    fn thread_item_to_json_includes_agent_message_phase() {
+        let value = thread_item_to_json(&ThreadItem::AgentMessage(
+            codex_app_server_sdk::AgentMessageItem {
+                id: "msg_1".to_string(),
+                text: "done".to_string(),
+                phase: Some(codex_app_server_sdk::AgentMessagePhase::FinalAnswer),
+            },
+        ));
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "agentMessage",
+                "id": "msg_1",
+                "text": "done",
+                "phase": "final_answer",
+            })
+        );
     }
 
     #[test]

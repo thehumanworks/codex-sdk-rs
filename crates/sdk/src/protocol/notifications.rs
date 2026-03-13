@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::protocol::responses::{ThreadSummary, Turn};
+use crate::protocol::shared::RequestId;
 
 macro_rules! opaque_struct {
     ($name:ident) => {
@@ -35,6 +36,35 @@ pub struct ThreadStartedNotification {
 pub struct ThreadNameUpdatedNotification {
     pub thread_id: String,
     pub name: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadLifecycleNotification {
+    pub thread_id: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStatusValue {
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub status_type: Option<String>,
+    #[serde(default)]
+    pub active_flags: Vec<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadStatusChangedNotification {
+    pub thread_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ThreadStatusValue>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -118,6 +148,16 @@ pub struct DeltaNotification {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_index: Option<u64>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerRequestResolvedNotification {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    pub request_id: RequestId,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }

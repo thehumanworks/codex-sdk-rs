@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions};
 use codex_app_server_sdk::{CodexClient, OpenAiSerializable, StdioConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -76,6 +76,16 @@ async fn run_collects_typed_items_and_response() -> Result<(), Box<dyn std::erro
         !result.final_response.trim().is_empty(),
         "final response should not be empty"
     );
+    let final_answer_item = result.items.iter().find_map(|item| match item {
+        ThreadItem::AgentMessage(message) if message.is_final_answer() => Some(message),
+        _ => None,
+    });
+    if let Some(message) = final_answer_item {
+        assert_eq!(
+            result.final_response, message.text,
+            "final_response should match the final_answer agent message when provided"
+        );
+    }
 
     Ok(())
 }

@@ -16,7 +16,11 @@ pub enum ServerEvent {
 pub enum ServerNotification {
     Error(n::ErrorNotification),
     ThreadStarted(n::ThreadStartedNotification),
+    ThreadArchived(n::ThreadLifecycleNotification),
+    ThreadUnarchived(n::ThreadLifecycleNotification),
+    ThreadClosed(n::ThreadLifecycleNotification),
     ThreadNameUpdated(n::ThreadNameUpdatedNotification),
+    ThreadStatusChanged(n::ThreadStatusChangedNotification),
     ThreadTokenUsageUpdated(n::ThreadTokenUsageUpdatedNotification),
     TurnStarted(n::TurnStartedNotification),
     TurnCompleted(n::TurnCompletedNotification),
@@ -49,6 +53,7 @@ pub enum ServerNotification {
     SessionConfigured(n::SessionConfiguredNotification),
     FuzzyFileSearchSessionUpdated(n::FuzzyFileSearchSessionUpdatedNotification),
     FuzzyFileSearchSessionCompleted(n::FuzzyFileSearchSessionCompletedNotification),
+    ServerRequestResolved(n::ServerRequestResolvedNotification),
     Unknown { method: String, params: Value },
 }
 
@@ -100,7 +105,11 @@ pub fn parse_notification(
     let event = match method.as_str() {
         "error" => ServerNotification::Error(decode(params)?),
         "thread/started" => ServerNotification::ThreadStarted(decode(params)?),
+        "thread/archived" => ServerNotification::ThreadArchived(decode(params)?),
+        "thread/unarchived" => ServerNotification::ThreadUnarchived(decode(params)?),
+        "thread/closed" => ServerNotification::ThreadClosed(decode(params)?),
         "thread/name/updated" => ServerNotification::ThreadNameUpdated(decode(params)?),
+        "thread/status/changed" => ServerNotification::ThreadStatusChanged(decode(params)?),
         "thread/tokenUsage/updated" => ServerNotification::ThreadTokenUsageUpdated(decode(params)?),
         "turn/started" => ServerNotification::TurnStarted(decode(params)?),
         "turn/completed" => ServerNotification::TurnCompleted(decode(params)?),
@@ -157,6 +166,7 @@ pub fn parse_notification(
         "fuzzyFileSearch/sessionCompleted" => {
             ServerNotification::FuzzyFileSearchSessionCompleted(decode(params)?)
         }
+        "serverRequest/resolved" => ServerNotification::ServerRequestResolved(decode(params)?),
         _ => ServerNotification::Unknown { method, params },
     };
     Ok(event)

@@ -9,13 +9,15 @@ pub mod schema;
 pub mod transport;
 
 pub use api::{
-    ApprovalMode, Codex, CollaborationMode, CollaborationModeKind, CollaborationModeSettings,
-    CommandExecutionItem, CommandExecutionStatus, DynamicToolSpec, ErrorItem, FileChangeItem,
-    FileUpdateChange, Input, McpToolCallItem, McpToolCallStatus, ModelReasoningEffort,
-    ModelReasoningSummary, PatchApplyStatus, PatchChangeKind, Personality, ReasoningItem,
-    RunResult, SandboxMode, StreamedTurn, Thread, ThreadError, ThreadEvent, ThreadItem,
-    ThreadOptions, ThreadOptionsBuilder, ThreadRunError, TodoItem, TodoListItem, Turn, TurnOptions,
-    TurnOptionsBuilder, Usage, UserInput, WebSearchItem, WebSearchMode,
+    AgentMessageItem, AgentMessagePhase, ApprovalMode, Codex, CollabToolCallItem,
+    CollaborationMode, CollaborationModeKind, CollaborationModeSettings, CommandExecutionItem,
+    CommandExecutionStatus, ContextCompactionItem, DynamicToolCallItem, DynamicToolSpec, ErrorItem,
+    FileChangeItem, FileUpdateChange, ImageViewItem, Input, McpToolCallItem, McpToolCallStatus,
+    ModelReasoningEffort, ModelReasoningSummary, PatchApplyStatus, PatchChangeKind, Personality,
+    PlanItem, ReasoningItem, ReviewModeItem, RunResult, SandboxMode, StreamedTurn, Thread,
+    ThreadError, ThreadEvent, ThreadItem, ThreadOptions, ThreadOptionsBuilder, ThreadRunError,
+    TodoItem, TodoListItem, Turn, TurnOptions, TurnOptionsBuilder, Usage, UserInput,
+    UserMessageContentItem, UserMessageItem, WebSearchItem, WebSearchMode,
 };
 pub use client::WsConfig;
 pub use client::{ClientOptions, CodexClient, StdioConfig};

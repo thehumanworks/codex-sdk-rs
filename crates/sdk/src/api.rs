@@ -688,8 +688,52 @@ pub enum ThreadEvent {
     Error { message: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMessagePhase {
+    Commentary,
+    FinalAnswer,
+    Unknown,
+}
+
+impl AgentMessagePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Commentary => "commentary",
+            Self::FinalAnswer => "final_answer",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMessageItem {
+    pub id: String,
+    pub text: String,
+    pub phase: Option<AgentMessagePhase>,
+}
+
+impl AgentMessageItem {
+    pub fn is_final_answer(&self) -> bool {
+        matches!(self.phase, Some(AgentMessagePhase::FinalAnswer))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UserMessageContentItem {
+    Text { text: String },
+    Image { url: String },
+    LocalImage { path: String },
+    Unknown(Value),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserMessageItem {
+    pub id: String,
+    pub content: Vec<UserMessageContentItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanItem {
     pub id: String,
     pub text: String,
 }
@@ -767,10 +811,50 @@ pub struct McpToolCallItem {
     pub status: McpToolCallStatus,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicToolCallItem {
+    pub id: String,
+    pub tool: String,
+    pub arguments: Value,
+    pub status: String,
+    pub content_items: Vec<Value>,
+    pub success: Option<bool>,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollabToolCallItem {
+    pub id: String,
+    pub tool: String,
+    pub status: String,
+    pub sender_thread_id: String,
+    pub receiver_thread_id: Option<String>,
+    pub new_thread_id: Option<String>,
+    pub prompt: Option<String>,
+    pub agent_status: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebSearchItem {
     pub id: String,
     pub query: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageViewItem {
+    pub id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewModeItem {
+    pub id: String,
+    pub review: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextCompactionItem {
+    pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -801,11 +885,19 @@ pub struct UnknownItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ThreadItem {
     AgentMessage(AgentMessageItem),
+    UserMessage(UserMessageItem),
+    Plan(PlanItem),
     Reasoning(ReasoningItem),
     CommandExecution(CommandExecutionItem),
     FileChange(FileChangeItem),
     McpToolCall(McpToolCallItem),
+    DynamicToolCall(DynamicToolCallItem),
+    CollabToolCall(CollabToolCallItem),
     WebSearch(WebSearchItem),
+    ImageView(ImageViewItem),
+    EnteredReviewMode(ReviewModeItem),
+    ExitedReviewMode(ReviewModeItem),
+    ContextCompaction(ContextCompactionItem),
     TodoList(TodoListItem),
     Error(ErrorItem),
     Unknown(UnknownItem),
@@ -1414,7 +1506,8 @@ impl Thread {
     ) -> Result<Turn, ThreadRunError> {
         let mut streamed = self.run_streamed(input, turn_options).await?;
         let mut items = Vec::new();
-        let mut final_response = String::new();
+        let mut final_answer = None;
+        let mut fallback_response = None;
         let mut usage = None;
         let mut saw_terminal = false;
 
@@ -1422,9 +1515,11 @@ impl Thread {
             let event = next.map_err(ThreadRunError::Client)?;
             match event {
                 ThreadEvent::ItemCompleted { item } => {
-                    if let ThreadItem::AgentMessage(agent) = &item {
-                        final_response = agent.text.clone();
-                    }
+                    update_final_response_candidates(
+                        &item,
+                        &mut final_answer,
+                        &mut fallback_response,
+                    );
                     items.push(item);
                 }
                 ThreadEvent::TurnCompleted { usage: completed } => {
@@ -1453,7 +1548,7 @@ impl Thread {
 
         Ok(Turn {
             items,
-            final_response,
+            final_response: final_answer.or(fallback_response).unwrap_or_default(),
             usage,
         })
     }
@@ -1526,6 +1621,26 @@ async fn pump_turn_events(
                         continue;
                     }
                     let item = ThreadItem::AgentMessage(AgentMessageItem {
+                        id: delta.item_id.unwrap_or_default(),
+                        text,
+                        phase: None,
+                    });
+                    if tx
+                        .send(Ok(ThreadEvent::ItemUpdated { item }))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                ServerNotification::ItemPlanDelta(delta)
+                    if matches_target_from_extra(&delta.extra, &thread_id, Some(&turn_id)) =>
+                {
+                    let text = delta.delta.or(delta.text).unwrap_or_default();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let item = ThreadItem::Plan(PlanItem {
                         id: delta.item_id.unwrap_or_default(),
                         text,
                     });
@@ -1602,6 +1717,22 @@ async fn pump_turn_events(
             }
             ServerEvent::ServerRequest(_) => {}
         }
+    }
+}
+
+fn update_final_response_candidates(
+    item: &ThreadItem,
+    final_answer: &mut Option<String>,
+    fallback_response: &mut Option<String>,
+) {
+    let ThreadItem::AgentMessage(agent_message) = item else {
+        return;
+    };
+
+    if agent_message.is_final_answer() {
+        *final_answer = Some(agent_message.text.clone());
+    } else {
+        *fallback_response = Some(agent_message.text.clone());
     }
 }
 
@@ -1976,6 +2107,31 @@ fn parse_thread_item(item: Value) -> ThreadItem {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            phase: object
+                .get("phase")
+                .and_then(Value::as_str)
+                .map(parse_agent_message_phase),
+        }),
+        Some("userMessage") => ThreadItem::UserMessage(UserMessageItem {
+            id: id.unwrap_or_default(),
+            content: object
+                .get("content")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .map(parse_user_message_content_item)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }),
+        Some("plan") => ThreadItem::Plan(PlanItem {
+            id: id.unwrap_or_default(),
+            text: object
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
         }),
         Some("reasoning") => ThreadItem::Reasoning(ReasoningItem {
             id: id.unwrap_or_default(),
@@ -2056,6 +2212,61 @@ fn parse_thread_item(item: Value) -> ThreadItem {
                 ),
             })
         }
+        Some("dynamicToolCall") => ThreadItem::DynamicToolCall(DynamicToolCallItem {
+            id: id.unwrap_or_default(),
+            tool: object
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            arguments: object.get("arguments").cloned().unwrap_or(Value::Null),
+            status: object
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            content_items: object
+                .get("contentItems")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            success: object.get("success").and_then(Value::as_bool),
+            duration_ms: object.get("durationMs").and_then(Value::as_u64),
+        }),
+        Some("collabToolCall") => ThreadItem::CollabToolCall(CollabToolCallItem {
+            id: id.unwrap_or_default(),
+            tool: object
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            status: object
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            sender_thread_id: object
+                .get("senderThreadId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            receiver_thread_id: object
+                .get("receiverThreadId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            new_thread_id: object
+                .get("newThreadId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            prompt: object
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            agent_status: object
+                .get("agentStatus")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
         Some("webSearch") => ThreadItem::WebSearch(WebSearchItem {
             id: id.unwrap_or_default(),
             query: object
@@ -2063,6 +2274,33 @@ fn parse_thread_item(item: Value) -> ThreadItem {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+        }),
+        Some("imageView") => ThreadItem::ImageView(ImageViewItem {
+            id: id.unwrap_or_default(),
+            path: object
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        Some("enteredReviewMode") => ThreadItem::EnteredReviewMode(ReviewModeItem {
+            id: id.unwrap_or_default(),
+            review: object
+                .get("review")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        Some("exitedReviewMode") => ThreadItem::ExitedReviewMode(ReviewModeItem {
+            id: id.unwrap_or_default(),
+            review: object
+                .get("review")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        Some("contextCompaction") => ThreadItem::ContextCompaction(ContextCompactionItem {
+            id: id.unwrap_or_default(),
         }),
         Some("todoList") => ThreadItem::TodoList(TodoListItem {
             id: id.unwrap_or_default(),
@@ -2085,6 +2323,45 @@ fn parse_thread_item(item: Value) -> ThreadItem {
             item_type,
             raw: item,
         }),
+    }
+}
+
+fn parse_agent_message_phase(value: &str) -> AgentMessagePhase {
+    match value {
+        "commentary" => AgentMessagePhase::Commentary,
+        "final_answer" => AgentMessagePhase::FinalAnswer,
+        _ => AgentMessagePhase::Unknown,
+    }
+}
+
+fn parse_user_message_content_item(value: &Value) -> UserMessageContentItem {
+    let Some(object) = value.as_object() else {
+        return UserMessageContentItem::Unknown(value.clone());
+    };
+
+    match object.get("type").and_then(Value::as_str) {
+        Some("text") => UserMessageContentItem::Text {
+            text: object
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("image") => UserMessageContentItem::Image {
+            url: object
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        Some("localImage") => UserMessageContentItem::LocalImage {
+            path: object
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        },
+        _ => UserMessageContentItem::Unknown(value.clone()),
     }
 }
 
@@ -2259,7 +2536,8 @@ mod tests {
         let item = parse_thread_item(json!({
             "id": "item_1",
             "type": "agentMessage",
-            "text": "hello"
+            "text": "hello",
+            "phase": "final_answer"
         }));
 
         assert_eq!(
@@ -2267,7 +2545,168 @@ mod tests {
             ThreadItem::AgentMessage(AgentMessageItem {
                 id: "item_1".to_string(),
                 text: "hello".to_string(),
+                phase: Some(AgentMessagePhase::FinalAnswer),
             })
+        );
+    }
+
+    #[test]
+    fn parse_missing_documented_thread_item_variants() {
+        let cases = vec![
+            (
+                json!({
+                    "id": "user_1",
+                    "type": "userMessage",
+                    "content": [
+                        { "type": "text", "text": "hello" },
+                        { "type": "localImage", "path": "/tmp/example.png" }
+                    ]
+                }),
+                ThreadItem::UserMessage(UserMessageItem {
+                    id: "user_1".to_string(),
+                    content: vec![
+                        UserMessageContentItem::Text {
+                            text: "hello".to_string(),
+                        },
+                        UserMessageContentItem::LocalImage {
+                            path: "/tmp/example.png".to_string(),
+                        },
+                    ],
+                }),
+            ),
+            (
+                json!({
+                    "id": "plan_1",
+                    "type": "plan",
+                    "text": "1. inspect\n2. patch"
+                }),
+                ThreadItem::Plan(PlanItem {
+                    id: "plan_1".to_string(),
+                    text: "1. inspect\n2. patch".to_string(),
+                }),
+            ),
+            (
+                json!({
+                    "id": "tool_1",
+                    "type": "dynamicToolCall",
+                    "tool": "tool/search",
+                    "arguments": { "q": "rust" },
+                    "status": "completed",
+                    "contentItems": [{ "type": "text", "text": "done" }],
+                    "success": true,
+                    "durationMs": 12
+                }),
+                ThreadItem::DynamicToolCall(DynamicToolCallItem {
+                    id: "tool_1".to_string(),
+                    tool: "tool/search".to_string(),
+                    arguments: json!({ "q": "rust" }),
+                    status: "completed".to_string(),
+                    content_items: vec![json!({ "type": "text", "text": "done" })],
+                    success: Some(true),
+                    duration_ms: Some(12),
+                }),
+            ),
+            (
+                json!({
+                    "id": "collab_1",
+                    "type": "collabToolCall",
+                    "tool": "delegate",
+                    "status": "completed",
+                    "senderThreadId": "thr_a",
+                    "receiverThreadId": "thr_b",
+                    "newThreadId": "thr_c",
+                    "prompt": "review this",
+                    "agentStatus": "idle"
+                }),
+                ThreadItem::CollabToolCall(CollabToolCallItem {
+                    id: "collab_1".to_string(),
+                    tool: "delegate".to_string(),
+                    status: "completed".to_string(),
+                    sender_thread_id: "thr_a".to_string(),
+                    receiver_thread_id: Some("thr_b".to_string()),
+                    new_thread_id: Some("thr_c".to_string()),
+                    prompt: Some("review this".to_string()),
+                    agent_status: Some("idle".to_string()),
+                }),
+            ),
+            (
+                json!({
+                    "id": "image_1",
+                    "type": "imageView",
+                    "path": "/tmp/example.jpg"
+                }),
+                ThreadItem::ImageView(ImageViewItem {
+                    id: "image_1".to_string(),
+                    path: "/tmp/example.jpg".to_string(),
+                }),
+            ),
+            (
+                json!({
+                    "id": "review_1",
+                    "type": "enteredReviewMode",
+                    "review": "current changes"
+                }),
+                ThreadItem::EnteredReviewMode(ReviewModeItem {
+                    id: "review_1".to_string(),
+                    review: "current changes".to_string(),
+                }),
+            ),
+            (
+                json!({
+                    "id": "review_2",
+                    "type": "exitedReviewMode",
+                    "review": "looks good"
+                }),
+                ThreadItem::ExitedReviewMode(ReviewModeItem {
+                    id: "review_2".to_string(),
+                    review: "looks good".to_string(),
+                }),
+            ),
+            (
+                json!({
+                    "id": "compact_1",
+                    "type": "contextCompaction"
+                }),
+                ThreadItem::ContextCompaction(ContextCompactionItem {
+                    id: "compact_1".to_string(),
+                }),
+            ),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(parse_thread_item(raw), expected);
+        }
+    }
+
+    #[test]
+    fn final_response_prefers_final_answer_phase() {
+        let mut final_answer = None;
+        let mut fallback_response = None;
+
+        update_final_response_candidates(
+            &ThreadItem::AgentMessage(AgentMessageItem {
+                id: "msg_1".to_string(),
+                text: "thinking".to_string(),
+                phase: Some(AgentMessagePhase::Commentary),
+            }),
+            &mut final_answer,
+            &mut fallback_response,
+        );
+        update_final_response_candidates(
+            &ThreadItem::AgentMessage(AgentMessageItem {
+                id: "msg_2".to_string(),
+                text: "final".to_string(),
+                phase: Some(AgentMessagePhase::FinalAnswer),
+            }),
+            &mut final_answer,
+            &mut fallback_response,
+        );
+
+        assert_eq!(fallback_response.as_deref(), Some("thinking"));
+        assert_eq!(final_answer.as_deref(), Some("final"));
+        assert_eq!(
+            final_answer.or(fallback_response),
+            Some("final".to_string())
         );
     }
 
