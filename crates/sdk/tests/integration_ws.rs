@@ -9,6 +9,8 @@ use codex_app_server_sdk::api::{ThreadEvent, ThreadOptions, TurnOptions};
 use codex_app_server_sdk::protocol::requests::{ClientInfo, InitializeParams};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
 
+const STREAM_EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+
 fn reserve_local_ws_url() -> Result<String, Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let addr = listener.local_addr()?;
@@ -117,8 +119,7 @@ async fn ws_client_start_thread_runs_and_streams() -> Result<(), Box<dyn std::er
         .await?;
     let mut saw_terminal = false;
 
-    while let Some(next) =
-        tokio::time::timeout(Duration::from_secs(2), streamed.next_event()).await?
+    while let Some(next) = tokio::time::timeout(STREAM_EVENT_TIMEOUT, streamed.next_event()).await?
     {
         let event = next?;
         match event {

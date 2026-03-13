@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Tokio Rust SDK for Codex App Server"
 license = "MIT"
-repository = "https://github.com/example/codex-app-server-sdk"
-readme = "../../README.md"
+repository = "https://github.com/thehumanworks/codex-sdk-rs"
+documentation = "https://docs.rs/codex-app-server-sdk"
+homepage = "https://github.com/thehumanworks/codex-sdk-rs"
+readme = "README.md"
 keywords = ["codex", "openai", "json-rpc", "sdk"]
 categories = ["api-bindings", "asynchronous"]
 

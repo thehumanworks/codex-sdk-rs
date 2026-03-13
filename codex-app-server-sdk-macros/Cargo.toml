@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2024"
 description = "Proc macros for codex-app-server-sdk"
 license = "MIT"
+repository = "https://github.com/thehumanworks/codex-sdk-rs"
+documentation = "https://docs.rs/codex-app-server-sdk-macros"
+homepage = "https://github.com/thehumanworks/codex-sdk-rs"
+readme = "README.md"
+keywords = ["codex", "openai", "sdk", "proc-macro"]
+categories = ["development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
