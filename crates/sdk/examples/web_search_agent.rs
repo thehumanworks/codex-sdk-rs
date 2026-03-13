@@ -47,16 +47,23 @@ async fn main() -> anyhow::Result<()> {
                 .build(),
         )
         .await?;
+    let mut last_agent_message: Option<String> = None;
     while let Some(Ok(event)) = output_stream.next_event().await {
         if let ThreadEvent::ItemCompleted { item } = &event {
             if let ThreadItem::AgentMessage(agent_message) = item {
-                println!("Agent Message: {}", agent_message.text);
-            }
-            if let ThreadItem::Reasoning(reasoning) = item {
-                println!("Reasoning: {}", reasoning.text);
+                last_agent_message = Some(agent_message.text.clone());
             }
         }
+        if let ThreadEvent::TurnCompleted { .. } = &event {
+            break;
+        }
     }
+    println!(
+        "{}",
+        last_agent_message
+            .as_ref()
+            .unwrap_or(&String::from("No agent message"))
+    );
 
     Ok(())
 }
