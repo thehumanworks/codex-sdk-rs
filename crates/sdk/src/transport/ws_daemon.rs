@@ -1,7 +1,9 @@
 use std::fs::{self, OpenOptions};
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use url::{Host, Url};
 
+use crate::client::{WsServerHandle, WsStartConfig, WsStartMode};
 use crate::error::ClientError;
 
 const DAEMON_LOG_DIR: &str = "/tmp/codex-app-server-sdk";
@@ -21,7 +24,7 @@ const STARTUP_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 static STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
-struct ManagedWsTarget {
+struct WsStartTarget {
     connect_url: String,
     listen_url: String,
     log_path: PathBuf,
@@ -41,25 +44,87 @@ pub async fn ensure_local_ws_app_server(
         return Ok(());
     };
 
-    if probe_app_server(&target.connect_url).await? == ProbeState::Reachable {
-        return Ok(());
-    }
+    let _handle = start_ws_server_internal(target, env, true, WsStartMode::Daemon).await?;
+    Ok(())
+}
 
-    let _guard = startup_lock().lock().await;
-
-    if probe_app_server(&target.connect_url).await? == ProbeState::Reachable {
-        return Ok(());
-    }
-
-    spawn_daemon_launcher_thread(&target, env)?;
-    wait_for_ready(&target).await
+pub async fn start_ws_server(
+    config: &WsStartConfig,
+    mode: WsStartMode,
+) -> Result<WsServerHandle, ClientError> {
+    let target = build_start_target(config)?;
+    start_ws_server_internal(target, &config.env, config.reuse_existing, mode).await
 }
 
 fn startup_lock() -> &'static Mutex<()> {
     STARTUP_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-fn parse_managed_ws_target(url: &str) -> Result<Option<ManagedWsTarget>, ClientError> {
+async fn start_ws_server_internal(
+    target: WsStartTarget,
+    env: &std::collections::HashMap<String, String>,
+    reuse_existing: bool,
+    mode: WsStartMode,
+) -> Result<WsServerHandle, ClientError> {
+    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode).await? {
+        return Ok(handle);
+    }
+
+    let _guard = startup_lock().lock().await;
+
+    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode).await? {
+        return Ok(handle);
+    }
+
+    match mode {
+        WsStartMode::Daemon => {
+            spawn_daemon_launcher_thread(&target, env)?;
+            wait_for_ready(&target, None).await?;
+            Ok(WsServerHandle::daemon_started(
+                target.listen_url,
+                target.connect_url,
+                target.log_path,
+            ))
+        }
+        WsStartMode::Blocking => {
+            let mut child = spawn_owned_process(&target, env)?;
+            wait_for_ready(&target, Some(&mut child)).await?;
+            Ok(WsServerHandle::blocking_started(
+                target.listen_url,
+                target.connect_url,
+                child,
+            ))
+        }
+    }
+}
+
+async fn existing_server_handle(
+    target: &WsStartTarget,
+    reuse_existing: bool,
+    mode: WsStartMode,
+) -> Result<Option<WsServerHandle>, ClientError> {
+    match probe_app_server(&target.connect_url).await {
+        Ok(ProbeState::Reachable) => {
+            if reuse_existing {
+                Ok(Some(WsServerHandle::from_reused_existing(
+                    target.listen_url.clone(),
+                    target.connect_url.clone(),
+                    mode,
+                    Some(target.log_path.clone()),
+                )))
+            } else {
+                Err(ClientError::TransportSend(format!(
+                    "websocket app-server already running at `{}` and reuse_existing is disabled",
+                    target.connect_url
+                )))
+            }
+        }
+        Ok(ProbeState::Unavailable) => Ok(None),
+        Err(err) => Err(conflict_error(&target.connect_url, err)),
+    }
+}
+
+fn parse_managed_ws_target(url: &str) -> Result<Option<WsStartTarget>, ClientError> {
     let parsed = Url::parse(url)
         .map_err(|err| ClientError::TransportSend(format!("invalid websocket URL: {err}")))?;
 
@@ -85,11 +150,55 @@ fn parse_managed_ws_target(url: &str) -> Result<Option<ManagedWsTarget>, ClientE
     let listen_url = format!("ws://{listen_host}:{port}");
     let log_path = log_path_for(&host, port);
 
-    Ok(Some(ManagedWsTarget {
+    Ok(Some(WsStartTarget {
         connect_url: url.to_string(),
         listen_url,
         log_path,
     }))
+}
+
+fn build_start_target(config: &WsStartConfig) -> Result<WsStartTarget, ClientError> {
+    let listen = parse_ws_url("listen_url", &config.listen_url)?;
+    parse_ws_url("connect_url", &config.connect_url)?;
+    let listen_host = listen.host().ok_or_else(|| {
+        ClientError::TransportSend(format!(
+            "invalid websocket listen_url: missing host in `{}`",
+            config.listen_url
+        ))
+    })?;
+    let listen_port = listen.port().ok_or_else(|| {
+        ClientError::TransportSend(format!(
+            "websocket listen_url must include explicit port: `{}`",
+            config.listen_url
+        ))
+    })?;
+
+    Ok(WsStartTarget {
+        listen_url: config.listen_url.clone(),
+        connect_url: config.connect_url.clone(),
+        log_path: log_path_for(&listen_host, listen_port),
+    })
+}
+
+fn parse_ws_url(label: &str, url: &str) -> Result<Url, ClientError> {
+    let parsed = Url::parse(url)
+        .map_err(|err| ClientError::TransportSend(format!("invalid websocket {label}: {err}")))?;
+    if parsed.scheme() != "ws" {
+        return Err(ClientError::TransportSend(format!(
+            "websocket {label} must use the `ws` scheme: `{url}`"
+        )));
+    }
+    if parsed.host().is_none() {
+        return Err(ClientError::TransportSend(format!(
+            "invalid websocket {label}: missing host in `{url}`"
+        )));
+    }
+    if parsed.port().is_none() {
+        return Err(ClientError::TransportSend(format!(
+            "websocket {label} must include explicit port: `{url}`"
+        )));
+    }
+    Ok(parsed)
 }
 
 fn is_loopback_host(host: &Host<&str>) -> bool {
@@ -165,7 +274,7 @@ fn is_retryable_connect_error(kind: ErrorKind) -> bool {
 }
 
 fn spawn_daemon_launcher_thread(
-    target: &ManagedWsTarget,
+    target: &WsStartTarget,
     env: &std::collections::HashMap<String, String>,
 ) -> Result<(), ClientError> {
     let target_for_thread = target.clone();
@@ -194,7 +303,7 @@ fn spawn_daemon_launcher_thread(
 }
 
 fn spawn_daemon_process(
-    target: &ManagedWsTarget,
+    target: &WsStartTarget,
     env: &std::collections::HashMap<String, String>,
 ) -> std::io::Result<()> {
     fs::create_dir_all(DAEMON_LOG_DIR)?;
@@ -223,10 +332,44 @@ fn spawn_daemon_process(
     Ok(())
 }
 
-async fn wait_for_ready(target: &ManagedWsTarget) -> Result<(), ClientError> {
+fn spawn_owned_process(
+    target: &WsStartTarget,
+    env: &std::collections::HashMap<String, String>,
+) -> std::io::Result<Child> {
+    let mut command = Command::new("codex");
+    #[cfg(unix)]
+    command.process_group(0);
+    command
+        .arg("app-server")
+        .arg("--listen")
+        .arg(&target.listen_url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    for (key, value) in env {
+        command.env(key, value);
+    }
+
+    command.spawn()
+}
+
+async fn wait_for_ready(
+    target: &WsStartTarget,
+    mut child: Option<&mut Child>,
+) -> Result<(), ClientError> {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
 
     loop {
+        if let Some(child) = child.as_deref_mut()
+            && let Some(status) = child.try_wait()?
+        {
+            return Err(ClientError::TransportSend(format!(
+                "websocket app-server for `{}` exited before becoming ready with status {status}",
+                target.connect_url
+            )));
+        }
+
         match probe_app_server(&target.connect_url).await {
             Ok(ProbeState::Reachable) => return Ok(()),
             Ok(ProbeState::Unavailable) => {}
@@ -248,6 +391,15 @@ async fn wait_for_ready(target: &ManagedWsTarget) -> Result<(), ClientError> {
         }
 
         tokio::time::sleep(PROBE_INTERVAL).await;
+    }
+}
+
+fn conflict_error(connect_url: &str, err: ClientError) -> ClientError {
+    match err {
+        ClientError::TransportSend(message) => ClientError::TransportSend(format!(
+            "websocket startup conflict at `{connect_url}`: {message}"
+        )),
+        other => other,
     }
 }
 
@@ -317,5 +469,22 @@ mod tests {
             }
             other => panic!("unexpected error variant: {other}"),
         }
+    }
+
+    #[test]
+    fn explicit_start_config_supports_separate_listen_and_connect_urls() {
+        let target = build_start_target(&WsStartConfig::new(
+            "ws://0.0.0.0:4222",
+            "ws://127.0.0.1:4222",
+            std::collections::HashMap::new(),
+        ))
+        .expect("config should be valid");
+
+        assert_eq!(target.listen_url, "ws://0.0.0.0:4222");
+        assert_eq!(target.connect_url, "ws://127.0.0.1:4222");
+        assert_eq!(
+            target.log_path,
+            PathBuf::from("/tmp/codex-app-server-sdk/app-server-0_0_0_0-4222.log")
+        );
     }
 }

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::process::Child;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
@@ -21,7 +23,7 @@ use crate::protocol::shared::{EmptyObject, RequestId};
 use crate::transport::TransportHandle;
 use crate::transport::stdio::spawn_stdio_transport;
 use crate::transport::ws::connect_ws_transport;
-use crate::transport::ws_daemon::ensure_local_ws_app_server;
+use crate::transport::ws_daemon::{ensure_local_ws_app_server, start_ws_server};
 
 type PendingMap = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
 type RefreshFuture = Pin<
@@ -166,6 +168,204 @@ impl Default for WsConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct WsStartConfig {
+    pub listen_url: String,
+    pub connect_url: String,
+    pub env: HashMap<String, String>,
+    pub reuse_existing: bool,
+}
+
+impl WsStartConfig {
+    pub fn new(
+        listen_url: impl Into<String>,
+        connect_url: impl Into<String>,
+        env: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            listen_url: listen_url.into(),
+            connect_url: connect_url.into(),
+            env,
+            reuse_existing: true,
+        }
+    }
+
+    pub fn with_listen_url(mut self, listen_url: impl Into<String>) -> Self {
+        self.listen_url = listen_url.into();
+        self
+    }
+
+    pub fn with_connect_url(mut self, connect_url: impl Into<String>) -> Self {
+        self.connect_url = connect_url.into();
+        self
+    }
+
+    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
+        self.env = env;
+        self
+    }
+
+    pub fn with_reuse_existing(mut self, reuse_existing: bool) -> Self {
+        self.reuse_existing = reuse_existing;
+        self
+    }
+}
+
+impl Default for WsStartConfig {
+    fn default() -> Self {
+        Self {
+            listen_url: String::from("ws://127.0.0.1:4222"),
+            connect_url: String::from("ws://127.0.0.1:4222"),
+            env: HashMap::new(),
+            reuse_existing: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsStartMode {
+    Daemon,
+    Blocking,
+}
+
+#[derive(Debug)]
+pub struct WsServerHandle {
+    listen_url: String,
+    connect_url: String,
+    mode: WsStartMode,
+    reused_existing: bool,
+    log_path: Option<PathBuf>,
+    process_group_id: Option<u32>,
+    child: Option<Child>,
+}
+
+impl WsServerHandle {
+    pub fn listen_url(&self) -> &str {
+        &self.listen_url
+    }
+
+    pub fn connect_url(&self) -> &str {
+        &self.connect_url
+    }
+
+    pub fn mode(&self) -> WsStartMode {
+        self.mode
+    }
+
+    pub fn reused_existing(&self) -> bool {
+        self.reused_existing
+    }
+
+    pub fn started_new_process(&self) -> bool {
+        !self.reused_existing
+    }
+
+    pub fn owns_process(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub fn log_path(&self) -> Option<&Path> {
+        self.log_path.as_deref()
+    }
+
+    pub fn connect_config(&self, options: ClientOptions) -> WsConfig {
+        WsConfig::new(self.connect_url.clone(), HashMap::new(), options)
+    }
+
+    pub fn shutdown(&mut self) -> Result<(), ClientError> {
+        if let Some(process_group_id) = self.process_group_id.take() {
+            let _ = terminate_process_group(process_group_id);
+        }
+
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+
+        for _ in 0..20 {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let _ = child.kill();
+        let _ = child.wait()?;
+        Ok(())
+    }
+
+    pub(crate) fn from_reused_existing(
+        listen_url: String,
+        connect_url: String,
+        mode: WsStartMode,
+        log_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            listen_url,
+            connect_url,
+            mode,
+            reused_existing: true,
+            log_path,
+            process_group_id: None,
+            child: None,
+        }
+    }
+
+    pub(crate) fn daemon_started(
+        listen_url: String,
+        connect_url: String,
+        log_path: PathBuf,
+    ) -> Self {
+        Self {
+            listen_url,
+            connect_url,
+            mode: WsStartMode::Daemon,
+            reused_existing: false,
+            log_path: Some(log_path),
+            process_group_id: None,
+            child: None,
+        }
+    }
+
+    pub(crate) fn blocking_started(listen_url: String, connect_url: String, child: Child) -> Self {
+        let process_group_id = Some(child.id());
+        Self {
+            listen_url,
+            connect_url,
+            mode: WsStartMode::Blocking,
+            reused_existing: false,
+            log_path: None,
+            process_group_id,
+            child: Some(child),
+        }
+    }
+}
+
+impl Drop for WsServerHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_group(process_group_id: u32) -> std::io::Result<()> {
+    let status = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(format!("-{process_group_id}"))
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "failed to terminate process group {process_group_id} with status {status}"
+        )))
+    }
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(_process_group_id: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 struct Inner {
     outbound: mpsc::Sender<Value>,
     pending: Mutex<PendingMap>,
@@ -217,6 +417,18 @@ impl CodexClient {
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
+    }
+
+    pub async fn start_ws(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        Self::start_ws_daemon(config).await
+    }
+
+    pub async fn start_ws_daemon(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        start_ws_server(&config, WsStartMode::Daemon).await
+    }
+
+    pub async fn start_ws_blocking(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        start_ws_server(&config, WsStartMode::Blocking).await
     }
 
     pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {

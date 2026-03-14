@@ -1,16 +1,10 @@
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashMap;
-
     use codex_app_server_sdk::api::{ThreadEvent, ThreadOptions, TurnOptions};
-    use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
+    use codex_app_server_sdk::{CodexClient, WsConfig, WsStartConfig};
 
-    let client = CodexClient::start_and_connect_ws(WsConfig {
-        url: "ws://127.0.0.1:4222".to_string(),
-        env: HashMap::new(),
-        options: ClientOptions::default(),
-    })
-    .await?;
+    let _server = CodexClient::start_ws_daemon(WsStartConfig::default()).await?;
+    let client = CodexClient::connect_ws(WsConfig::default()).await?;
 
     let mut thread = client.start_thread(
         ThreadOptions::builder()

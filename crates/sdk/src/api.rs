@@ -9,6 +9,7 @@ use tokio::task::JoinHandle;
 use crate::CodexClient;
 use crate::client::StdioConfig;
 use crate::client::WsConfig;
+use crate::client::{WsServerHandle, WsStartConfig};
 use crate::error::ClientError;
 use crate::events::{ServerEvent, ServerNotification};
 use crate::protocol::shared::EmptyObject;
@@ -993,6 +994,18 @@ impl Codex {
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         let client = CodexClient::connect_ws(config).await?;
         Ok(Self::from_client(client))
+    }
+
+    pub async fn start_ws(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        CodexClient::start_ws(config).await
+    }
+
+    pub async fn start_ws_daemon(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        CodexClient::start_ws_daemon(config).await
+    }
+
+    pub async fn start_ws_blocking(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
+        CodexClient::start_ws_blocking(config).await
     }
 
     pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {

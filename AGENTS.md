@@ -129,7 +129,7 @@
 - `crates/sdk/examples/auth_api_key.rs` requires `OPENAI_API_KEY`.
 - Loopback websocket URLs auto-manage a persistent local daemon (`codex app-server --listen ...`) and write logs to `/tmp/codex-app-server-sdk/`.
 - `CodexClient` provides high-level API entrypoints (`start_thread`, `resume_thread`, `as_api`) so stdio and ws clients can both use the same typed `run`/`run_streamed` thread flow.
-- Use `connect_ws` to connect to a running websocket server, and `start_and_connect_ws` to manage a local daemon for loopback connections.
+- Use `connect_ws` to attach to a running websocket server, `start_ws_daemon` or `start_ws_blocking` for explicit startup, and `start_and_connect_ws` only as the loopback convenience wrapper.
 - `Codex` forwards the full typed RPC surface (thread lifecycle, turn controls, auth/config, skills, MCP, review, and raw fallback) after ensuring handshake readiness.
 - High-level API includes final-response shortcuts: `Thread::ask(...)`, `Codex::ask(...)`, and `Codex::ask_with_options(...)`, which return only the final agent message text.
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).

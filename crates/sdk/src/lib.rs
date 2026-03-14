@@ -19,8 +19,9 @@ pub use api::{
     ThreadRunError, TodoItem, TodoListItem, Turn, TurnOptions, TurnOptionsBuilder, Usage,
     UserInput, UserMessageContentItem, UserMessageItem, WebSearchItem, WebSearchMode,
 };
-pub use client::WsConfig;
-pub use client::{ClientOptions, CodexClient, StdioConfig};
+pub use client::{
+    ClientOptions, CodexClient, StdioConfig, WsConfig, WsServerHandle, WsStartConfig, WsStartMode,
+};
 pub use codex_app_server_sdk_macros::{OpenAiSerializable, openai_type};
 pub use error::{ClientError, RpcError};
 pub use events::{ServerEvent, ServerNotification, ServerRequestEvent};
