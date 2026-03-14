@@ -1562,16 +1562,15 @@ impl Thread {
 
         let (tx, rx) = mpsc::channel(256);
 
-        if let Some(started_thread_id) = emit_thread_started {
-            if tx
+        if let Some(started_thread_id) = emit_thread_started
+            && tx
                 .send(Ok(ThreadEvent::ThreadStarted {
                     thread_id: started_thread_id,
                 }))
                 .await
                 .is_err()
-            {
-                return Err(ClientError::TransportClosed);
-            }
+        {
+            return Err(ClientError::TransportClosed);
         }
 
         if tx.send(Ok(ThreadEvent::TurnStarted)).await.is_err() {

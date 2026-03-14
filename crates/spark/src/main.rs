@@ -172,6 +172,7 @@ struct AgentConfigLayer {
     model_instructions_file: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum ParsedCommand {
     Help,
@@ -508,13 +509,13 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
         let event = next?;
         match event {
             ThreadEvent::ItemUpdated { item } => {
-                if let ThreadItem::AgentMessage(agent_message) = item {
-                    if !agent_message.text.is_empty() {
-                        print_chunk(&mut stdout, &agent_message.text)?;
-                        saw_delta_for_message = true;
-                        printed_any = true;
-                        ended_with_newline = agent_message.text.ends_with('\n');
-                    }
+                if let ThreadItem::AgentMessage(agent_message) = item
+                    && !agent_message.text.is_empty()
+                {
+                    print_chunk(&mut stdout, &agent_message.text)?;
+                    saw_delta_for_message = true;
+                    printed_any = true;
+                    ended_with_newline = agent_message.text.ends_with('\n');
                 }
             }
             ThreadEvent::ItemCompleted { item } => {
@@ -814,8 +815,10 @@ async fn start_ws_server(url: &str) -> Result<(), SparkError> {
 
 async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
     let codex_binary = resolve_codex_binary()?;
-    let mut stdio_config = StdioConfig::default();
-    stdio_config.codex_binary = codex_binary;
+    let stdio_config = StdioConfig {
+        codex_binary,
+        ..Default::default()
+    };
     Ok(Codex::spawn_stdio(stdio_config).await?)
 }
 
@@ -1039,10 +1042,10 @@ fn extract_item_text(item: &Value) -> Option<String> {
         }
         Value::Object(object) => {
             for key in ["text", "content", "message", "output_text", "outputText"] {
-                if let Some(text) = object.get(key).and_then(extract_item_text) {
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
+                if let Some(text) = object.get(key).and_then(extract_item_text)
+                    && !text.is_empty()
+                {
+                    return Some(text);
                 }
             }
             None
@@ -1063,12 +1066,12 @@ fn item_is_assistant_message(item: &Value) -> bool {
         }
     }
 
-    if let Some(author) = object.get("author").and_then(Value::as_object) {
-        if let Some(role) = author.get("role").and_then(Value::as_str) {
-            let role = role.to_ascii_lowercase();
-            if role.contains("assistant") || role.contains("agent") {
-                return true;
-            }
+    if let Some(author) = object.get("author").and_then(Value::as_object)
+        && let Some(role) = author.get("role").and_then(Value::as_str)
+    {
+        let role = role.to_ascii_lowercase();
+        if role.contains("assistant") || role.contains("agent") {
+            return true;
         }
     }
 
@@ -2425,6 +2428,7 @@ fn resolve_path_from_file(file_path: &Path, raw_path: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::useless_conversion)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};

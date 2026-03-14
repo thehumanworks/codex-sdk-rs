@@ -19,9 +19,10 @@ fn shared_env() -> HashMap<String, String> {
 }
 
 fn stdio_config_with_env(env: &HashMap<String, String>) -> StdioConfig {
-    let mut config = StdioConfig::default();
-    config.env = env.clone();
-    config
+    StdioConfig {
+        env: env.clone(),
+        ..Default::default()
+    }
 }
 
 fn spark_binary() -> PathBuf {

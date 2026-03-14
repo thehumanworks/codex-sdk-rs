@@ -1,6 +1,6 @@
 [package]
 name = "codex-app-server-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Tokio Rust SDK for Codex App Server"
 license = "MIT"

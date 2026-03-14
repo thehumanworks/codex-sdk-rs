@@ -50,13 +50,13 @@ async fn main() -> anyhow::Result<()> {
     let mut last_agent_message: Option<String> = None;
     let mut final_agent_message: Option<String> = None;
     while let Some(Ok(event)) = output_stream.next_event().await {
-        if let ThreadEvent::ItemCompleted { item } = &event {
-            if let ThreadItem::AgentMessage(agent_message) = item {
-                if agent_message.is_final_answer() {
-                    final_agent_message = Some(agent_message.text.clone());
-                }
-                last_agent_message = Some(agent_message.text.clone());
+        if let ThreadEvent::ItemCompleted { item } = &event
+            && let ThreadItem::AgentMessage(agent_message) = item
+        {
+            if agent_message.is_final_answer() {
+                final_agent_message = Some(agent_message.text.clone());
             }
+            last_agent_message = Some(agent_message.text.clone());
         }
         if let ThreadEvent::TurnCompleted { .. } = &event {
             break;
