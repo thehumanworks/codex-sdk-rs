@@ -1808,27 +1808,27 @@ fn select_latest_thread_id(
     threads: &[responses::ThreadSummary],
     working_directory: Option<&str>,
 ) -> Option<String> {
-    let mut newest: Option<(i64, String)> = None;
-    let mut fallback_id: Option<String> = None;
+    let mut selected: Option<(Option<i64>, String)> = None;
 
     for thread in threads {
         if !thread_matches_working_directory(thread, working_directory) {
             continue;
         }
 
-        if fallback_id.is_none() {
-            fallback_id = Some(thread.id.clone());
-        }
-
-        if let Some(score) = thread_recency_score(thread) {
-            match &newest {
-                Some((best_score, _)) if score <= *best_score => {}
-                _ => newest = Some((score, thread.id.clone())),
+        let candidate = (thread_recency_score(thread), thread.id.clone());
+        match &selected {
+            None => selected = Some(candidate),
+            // `thread/list` is already emitted newest-first. If either entry lacks
+            // recency metadata, keep the earlier-listed match instead of letting a
+            // later older summary override it just because it has a timestamp.
+            Some((Some(best_score), _)) if candidate.0.is_some_and(|score| score > *best_score) => {
+                selected = Some(candidate)
             }
+            Some(_) => {}
         }
     }
 
-    newest.map(|(_, thread_id)| thread_id).or(fallback_id)
+    selected.map(|(_, thread_id)| thread_id)
 }
 
 fn thread_matches_working_directory(
@@ -2920,6 +2920,19 @@ mod tests {
         assert_eq!(
             select_latest_thread_id(&threads, Some("/tmp/workspace")),
             Some("thread_match".to_string())
+        );
+    }
+
+    #[test]
+    fn select_latest_thread_id_keeps_newest_listed_match_when_later_entry_only_has_timestamp() {
+        let threads = vec![
+            thread_summary("thread_newest", Some("/tmp/workspace"), None, None),
+            thread_summary("thread_older", Some("/tmp/workspace"), Some(100), None),
+        ];
+
+        assert_eq!(
+            select_latest_thread_id(&threads, Some("/tmp/workspace")),
+            Some("thread_newest".to_string())
         );
     }
 
