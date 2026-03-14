@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions};
-use codex_app_server_sdk::{CodexClient, OpenAiSerializable, StdioConfig};
-use schemars::JsonSchema;
+use codex_app_server_sdk::{CodexClient, JsonSchema, OpenAiSerializable, StdioConfig};
 use serde::{Deserialize, Serialize};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(90);

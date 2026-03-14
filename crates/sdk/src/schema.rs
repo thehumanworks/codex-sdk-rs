@@ -1,4 +1,5 @@
 use schemars::JsonSchema;
+use schemars::generate::SchemaSettings;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -25,8 +26,10 @@ pub fn openai_json_schema_for<T>() -> Value
 where
     T: JsonSchema,
 {
-    let mut schema = schemars::schema_for!(T);
-    schema.meta_schema = None;
+    let schema = SchemaSettings::default()
+        .with(|settings| settings.meta_schema = None)
+        .into_generator()
+        .into_root_schema_for::<T>();
     let mut schema =
         serde_json::to_value(schema).expect("serializing generated schema should not fail");
     enforce_openai_object_constraints(&mut schema);

@@ -2,7 +2,10 @@
 
 Companion proc-macro crate for [`codex-app-server-sdk`](https://docs.rs/codex-app-server-sdk).
 
-This crate provides the `#[derive(OpenAiSerializable)]` derive used by the SDK's typed structured-output helpers.
+This crate provides:
+
+- `#[derive(OpenAiSerializable)]` for the SDK's typed structured-output helpers.
+- `#[openai_type]` as a convenience attribute that appends the SDK-owned `serde`, `schemars`, and `OpenAiSerializable` derives plus the required crate-path overrides.
 
 Most consumers should depend on `codex-app-server-sdk` directly and import the derive from there:
 

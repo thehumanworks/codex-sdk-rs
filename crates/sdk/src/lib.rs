@@ -21,13 +21,15 @@ pub use api::{
 };
 pub use client::WsConfig;
 pub use client::{ClientOptions, CodexClient, StdioConfig};
-pub use codex_app_server_sdk_macros::OpenAiSerializable;
+pub use codex_app_server_sdk_macros::{OpenAiSerializable, openai_type};
 pub use error::{ClientError, RpcError};
 pub use events::{ServerEvent, ServerNotification, ServerRequestEvent};
 pub use protocol::{notifications, requests, responses, server_requests, shared};
 pub use schema::{
     OpenAiSerializable, deserialize_openai_value, openai_json_schema_for, serialize_openai_value,
 };
+pub use schemars::{self, JsonSchema};
+pub use serde::{self, Deserialize, Serialize};
 
 #[doc(hidden)]
 pub use serde_json as __private_serde_json;

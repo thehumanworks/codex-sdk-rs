@@ -1,7 +1,7 @@
 use codex_app_server_sdk::{
-    CodexClient, OpenAiSerializable, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions, WsConfig,
+    CodexClient, JsonSchema, OpenAiSerializable, ThreadEvent, ThreadItem, ThreadOptions,
+    TurnOptions, WsConfig,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]

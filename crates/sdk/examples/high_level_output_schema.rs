@@ -1,6 +1,5 @@
 use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
-use codex_app_server_sdk::{OpenAiSerializable, StdioConfig};
-use schemars::JsonSchema;
+use codex_app_server_sdk::{JsonSchema, OpenAiSerializable, StdioConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]

@@ -1,6 +1,6 @@
 [package]
 name = "codex-app-server-sdk-macros"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Proc macros for codex-app-server-sdk"
 license = "MIT"

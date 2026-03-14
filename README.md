@@ -4,7 +4,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 ## Status
 
-- `0.1.0`
+- `0.1.2`
 - Focused on deterministic automation: explicit timeouts and no implicit retries.
 - Typed v2 request methods with raw JSON fallback for protocol drift.
 
@@ -101,8 +101,7 @@ println!("response: {final_response}");
 
 ```rust
 use codex_app_server_sdk::api::{Codex, ThreadOptions, TurnOptions};
-use codex_app_server_sdk::{OpenAiSerializable, StdioConfig};
-use schemars::JsonSchema;
+use codex_app_server_sdk::{JsonSchema, OpenAiSerializable, StdioConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]
@@ -123,6 +122,19 @@ let reply = Reply::from_openai_value(value)?;
 println!("{}", reply.answer);
 # Ok(())
 # }
+```
+
+Use `codex_app_server_sdk::JsonSchema` instead of adding a separate `schemars` dependency unless you deliberately need a different version elsewhere in your application. That keeps the derive macro and `OpenAiSerializable` on the same trait version.
+
+If you want the SDK to wire the derives and crate paths for you, use the convenience attribute:
+
+```rust
+#[codex_app_server_sdk::openai_type]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Reply {
+    #[serde(rename = "final_answer")]
+    answer: String,
+}
 ```
 
 `ThreadOptionsBuilder` also exposes protocol-level options that were previously missing, including:
