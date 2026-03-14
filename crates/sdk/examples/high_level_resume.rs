@@ -1,7 +1,9 @@
 use std::env;
 
 use codex_app_server_sdk::StdioConfig;
-use codex_app_server_sdk::api::{ApprovalMode, Codex, SandboxMode, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{
+    ApprovalMode, Codex, ResumeThread, SandboxMode, ThreadOptions, TurnOptions,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -14,10 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .sandbox_mode(SandboxMode::WorkspaceWrite)
         .build();
 
-    let mut thread = match env::var("CODEX_THREAD_ID") {
-        Ok(thread_id) => codex.resume_thread_by_id(thread_id, options),
-        Err(_) => codex.resume_latest_thread(options),
+    let resume_target = match env::var("CODEX_THREAD_ID") {
+        Ok(thread_id) => ResumeThread::ById(thread_id),
+        Err(_) => ResumeThread::Latest,
     };
+    let mut thread = codex.resume_thread(resume_target, options);
     let response = thread
         .ask("Give me a one-line status update.", TurnOptions::default())
         .await?;

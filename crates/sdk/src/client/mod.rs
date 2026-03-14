@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 
-use crate::api::{Codex, Thread, ThreadOptions};
+use crate::api::{Codex, ResumeThread, Thread, ThreadOptions};
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
 use crate::events::{
     ServerEvent, ServerNotification, ServerRequestEvent, parse_notification, parse_server_request,
@@ -258,8 +258,8 @@ impl CodexClient {
         self.as_api().start_thread(options)
     }
 
-    pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
-        self.resume_thread_by_id(id, options)
+    pub fn resume_thread(&self, target: impl Into<ResumeThread>, options: ThreadOptions) -> Thread {
+        self.as_api().resume_thread(target, options)
     }
 
     pub fn resume_thread_by_id(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {

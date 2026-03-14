@@ -247,6 +247,31 @@ impl DynamicToolSpec {
     }
 }
 
+/// SDK-level resume target for selecting either the latest recorded thread or a specific thread id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeThread {
+    Latest,
+    ById(String),
+}
+
+impl From<String> for ResumeThread {
+    fn from(value: String) -> Self {
+        Self::ById(value)
+    }
+}
+
+impl From<&str> for ResumeThread {
+    fn from(value: &str) -> Self {
+        Self::ById(value.to_string())
+    }
+}
+
+impl From<&String> for ResumeThread {
+    fn from(value: &String) -> Self {
+        Self::ById(value.clone())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ThreadOptions {
     pub model: Option<String>,
@@ -985,29 +1010,28 @@ impl Codex {
         }
     }
 
-    pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
-        self.resume_thread_by_id(id, options)
+    pub fn resume_thread(&self, target: impl Into<ResumeThread>, options: ThreadOptions) -> Thread {
+        let target = target.into();
+        let id = match &target {
+            ResumeThread::Latest => None,
+            ResumeThread::ById(thread_id) => Some(thread_id.clone()),
+        };
+
+        Thread {
+            codex: self.clone(),
+            id,
+            pending_resume: Some(target),
+            last_turn_id: None,
+            options,
+        }
     }
 
     pub fn resume_thread_by_id(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
-        let id = id.into();
-        Thread {
-            codex: self.clone(),
-            id: Some(id.clone()),
-            pending_resume: Some(PendingResume::ById(id)),
-            last_turn_id: None,
-            options,
-        }
+        self.resume_thread(ResumeThread::ById(id.into()), options)
     }
 
     pub fn resume_latest_thread(&self, options: ThreadOptions) -> Thread {
-        Thread {
-            codex: self.clone(),
-            id: None,
-            pending_resume: Some(PendingResume::Latest),
-            last_turn_id: None,
-            options,
-        }
+        self.resume_thread(ResumeThread::Latest, options)
     }
 
     /// Runs a one-shot turn on a new thread and returns only the final agent response text.
@@ -1299,16 +1323,10 @@ impl Codex {
     }
 }
 
-#[derive(Debug, Clone)]
-enum PendingResume {
-    ById(String),
-    Latest,
-}
-
 pub struct Thread {
     codex: Codex,
     id: Option<String>,
-    pending_resume: Option<PendingResume>,
+    pending_resume: Option<ResumeThread>,
     last_turn_id: Option<String>,
     options: ThreadOptions,
 }
@@ -1326,8 +1344,8 @@ impl Thread {
         let mut emit_thread_started = None;
         if let Some(pending_resume) = self.pending_resume.clone() {
             let thread_id = match pending_resume {
-                PendingResume::ById(thread_id) => thread_id,
-                PendingResume::Latest => self.resolve_latest_thread_id().await?,
+                ResumeThread::ById(thread_id) => thread_id,
+                ResumeThread::Latest => self.resolve_latest_thread_id().await?,
             };
             let resume_params = build_thread_resume_params(&thread_id, &self.options);
             let resumed = self.codex.inner.client.thread_resume(resume_params).await?;

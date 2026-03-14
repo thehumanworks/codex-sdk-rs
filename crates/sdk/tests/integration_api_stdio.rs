@@ -3,7 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use codex_app_server_sdk::api::{Codex, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions};
+use codex_app_server_sdk::api::{
+    Codex, ResumeThread, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
+};
 use codex_app_server_sdk::{CodexClient, JsonSchema, OpenAiSerializable, StdioConfig};
 use serde::{Deserialize, Serialize};
 
@@ -241,7 +243,7 @@ async fn codex_resume_thread_by_id_reuses_existing_thread() -> Result<(), Box<dy
     let token = unique_token("resume-by-id");
     let thread_id = seed_session(&codex, &token, ThreadOptions::default()).await?;
 
-    let mut thread = codex.resume_thread_by_id(thread_id.clone(), ThreadOptions::default());
+    let mut thread = codex.resume_thread(thread_id.clone(), ThreadOptions::default());
     let response = thread
         .ask(
             "Return only the sentinel token from earlier in this same session. Do not add any other text.",
@@ -300,7 +302,8 @@ async fn codex_resume_latest_thread_uses_most_recent_matching_working_directory(
     )
     .await?;
 
-    let mut thread = codex.resume_latest_thread(
+    let mut thread = codex.resume_thread(
+        ResumeThread::Latest,
         ThreadOptions::builder()
             .working_directory(target_cwd.clone())
             .build(),
