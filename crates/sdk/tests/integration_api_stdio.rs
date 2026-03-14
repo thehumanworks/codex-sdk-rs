@@ -52,6 +52,47 @@ fn isolated_stdio_config() -> StdioConfig {
     config
 }
 
+fn unique_token(label: &str) -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    format!("{label}-{}-{stamp}", std::process::id())
+}
+
+fn unique_working_directory(label: &str) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "codex-sdk-rs-api-{label}-{}-{stamp}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&path).expect("create working directory");
+    path
+}
+
+async fn seed_session(
+    codex: &Codex,
+    token: &str,
+    options: ThreadOptions,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut thread = codex.start_thread(options);
+    let prompt = format!(
+        "Remember this exact sentinel token for future turns in this session: {token}. Reply with exactly STORED."
+    );
+    let response = thread.ask(prompt, TurnOptions::default()).await?;
+    assert!(
+        !response.trim().is_empty(),
+        "seed response should not be empty"
+    );
+    Ok(thread
+        .id()
+        .ok_or("thread id should be populated after seeding")?
+        .to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, OpenAiSerializable)]
 struct SchemaConstrainedResponse {
     answer: String,
@@ -188,6 +229,101 @@ async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::e
     assert!(
         !result.final_response.trim().is_empty(),
         "final response should not be empty"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_resume_thread_by_id_reuses_existing_thread() -> Result<(), Box<dyn std::error::Error>>
+{
+    let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
+    let token = unique_token("resume-by-id");
+    let thread_id = seed_session(&codex, &token, ThreadOptions::default()).await?;
+
+    let mut thread = codex.resume_thread_by_id(thread_id.clone(), ThreadOptions::default());
+    let response = thread
+        .ask(
+            "Return only the sentinel token from earlier in this same session. Do not add any other text.",
+            TurnOptions::default(),
+        )
+        .await?;
+
+    assert_eq!(thread.id(), Some(thread_id.as_str()));
+    assert!(
+        response.contains(&token),
+        "resume by id should return the seeded sentinel token"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn codex_resume_latest_thread_uses_most_recent_matching_working_directory()
+-> Result<(), Box<dyn std::error::Error>> {
+    let codex = Codex::spawn_stdio(isolated_stdio_config()).await?;
+    let target_cwd = unique_working_directory("resume-latest-target");
+    let other_cwd = unique_working_directory("resume-latest-other");
+    let target_cwd = target_cwd.to_string_lossy().to_string();
+    let other_cwd = other_cwd.to_string_lossy().to_string();
+
+    let older_token = unique_token("resume-latest-old");
+    let other_token = unique_token("resume-latest-other");
+    let newer_token = unique_token("resume-latest-new");
+
+    let _older_id = seed_session(
+        &codex,
+        &older_token,
+        ThreadOptions::builder()
+            .working_directory(target_cwd.clone())
+            .build(),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    let _other_id = seed_session(
+        &codex,
+        &other_token,
+        ThreadOptions::builder()
+            .working_directory(other_cwd.clone())
+            .build(),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(25)).await;
+
+    let newer_id = seed_session(
+        &codex,
+        &newer_token,
+        ThreadOptions::builder()
+            .working_directory(target_cwd.clone())
+            .build(),
+    )
+    .await?;
+
+    let mut thread = codex.resume_latest_thread(
+        ThreadOptions::builder()
+            .working_directory(target_cwd.clone())
+            .build(),
+    );
+    let response = thread
+        .ask(
+            "Return only the sentinel token from earlier in this same session. Do not add any other text.",
+            TurnOptions::default(),
+        )
+        .await?;
+
+    assert_eq!(thread.id(), Some(newer_id.as_str()));
+    assert!(
+        response.contains(&newer_token),
+        "resume latest should return the newest sentinel token in the matching working directory"
+    );
+    assert!(
+        !response.contains(&older_token),
+        "resume latest should not return the older matching thread token"
+    );
+    assert!(
+        !response.contains(&other_token),
+        "resume latest should not return a token from a different working directory"
     );
 
     Ok(())

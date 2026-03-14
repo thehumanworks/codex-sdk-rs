@@ -15,6 +15,9 @@ use crate::protocol::shared::EmptyObject;
 use crate::protocol::{requests, responses};
 use crate::schema::OpenAiSerializable;
 
+const THREAD_LIST_PAGE_LIMIT: u32 = 100;
+const MAX_THREAD_LIST_PAGES: usize = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalMode {
     Never,
@@ -976,17 +979,32 @@ impl Codex {
         Thread {
             codex: self.clone(),
             id: None,
-            needs_resume: false,
+            pending_resume: None,
             last_turn_id: None,
             options,
         }
     }
 
     pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
+        self.resume_thread_by_id(id, options)
+    }
+
+    pub fn resume_thread_by_id(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
+        let id = id.into();
         Thread {
             codex: self.clone(),
-            id: Some(id.into()),
-            needs_resume: true,
+            id: Some(id.clone()),
+            pending_resume: Some(PendingResume::ById(id)),
+            last_turn_id: None,
+            options,
+        }
+    }
+
+    pub fn resume_latest_thread(&self, options: ThreadOptions) -> Thread {
+        Thread {
+            codex: self.clone(),
+            id: None,
+            pending_resume: Some(PendingResume::Latest),
             last_turn_id: None,
             options,
         }
@@ -1281,10 +1299,16 @@ impl Codex {
     }
 }
 
+#[derive(Debug, Clone)]
+enum PendingResume {
+    ById(String),
+    Latest,
+}
+
 pub struct Thread {
     codex: Codex,
     id: Option<String>,
-    needs_resume: bool,
+    pending_resume: Option<PendingResume>,
     last_turn_id: Option<String>,
     options: ThreadOptions,
 }
@@ -1300,7 +1324,17 @@ impl Thread {
         self.codex.ensure_initialized().await?;
 
         let mut emit_thread_started = None;
-        if self.id.is_none() {
+        if let Some(pending_resume) = self.pending_resume.clone() {
+            let thread_id = match pending_resume {
+                PendingResume::ById(thread_id) => thread_id,
+                PendingResume::Latest => self.resolve_latest_thread_id().await?,
+            };
+            let resume_params = build_thread_resume_params(&thread_id, &self.options);
+            let resumed = self.codex.inner.client.thread_resume(resume_params).await?;
+            self.id = Some(resumed.thread.id);
+            self.pending_resume = None;
+            self.last_turn_id = None;
+        } else if self.id.is_none() {
             let thread = self
                 .codex
                 .inner
@@ -1309,14 +1343,6 @@ impl Thread {
                 .await?;
             self.id = Some(thread.thread.id.clone());
             emit_thread_started = Some(thread.thread.id);
-            self.needs_resume = false;
-            self.last_turn_id = None;
-        } else if self.needs_resume {
-            let resume_params =
-                build_thread_resume_params(&self.id.clone().unwrap_or_default(), &self.options);
-            let resumed = self.codex.inner.client.thread_resume(resume_params).await?;
-            self.id = Some(resumed.thread.id);
-            self.needs_resume = false;
             self.last_turn_id = None;
         }
 
@@ -1325,6 +1351,48 @@ impl Thread {
         })?;
 
         Ok((thread_id, emit_thread_started))
+    }
+
+    async fn resolve_latest_thread_id(&self) -> Result<String, ClientError> {
+        let mut cursor: Option<String> = None;
+        let mut pages_scanned = 0usize;
+        let mut threads = Vec::new();
+
+        loop {
+            pages_scanned += 1;
+            if pages_scanned > MAX_THREAD_LIST_PAGES {
+                return Err(ClientError::TransportSend(format!(
+                    "could not resolve latest thread after scanning {MAX_THREAD_LIST_PAGES} pages"
+                )));
+            }
+
+            let result = self
+                .codex
+                .inner
+                .client
+                .thread_list(requests::ThreadListParams {
+                    limit: Some(THREAD_LIST_PAGE_LIMIT),
+                    cursor: cursor.clone(),
+                    ..Default::default()
+                })
+                .await?;
+
+            threads.extend(result.data);
+
+            match result.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        select_latest_thread_id(&threads, self.options.working_directory.as_deref()).ok_or_else(
+            || match self.options.working_directory.as_deref() {
+                Some(working_directory) => ClientError::TransportSend(format!(
+                    "no recorded thread found for working directory `{working_directory}`"
+                )),
+                None => ClientError::TransportSend("no recorded thread found".to_string()),
+            },
+        )
     }
 
     pub async fn set_name(
@@ -1733,6 +1801,60 @@ fn update_final_response_candidates(
         *final_answer = Some(agent_message.text.clone());
     } else {
         *fallback_response = Some(agent_message.text.clone());
+    }
+}
+
+fn select_latest_thread_id(
+    threads: &[responses::ThreadSummary],
+    working_directory: Option<&str>,
+) -> Option<String> {
+    let mut newest: Option<(i64, String)> = None;
+    let mut fallback_id: Option<String> = None;
+
+    for thread in threads {
+        if !thread_matches_working_directory(thread, working_directory) {
+            continue;
+        }
+
+        if fallback_id.is_none() {
+            fallback_id = Some(thread.id.clone());
+        }
+
+        if let Some(score) = thread_recency_score(thread) {
+            match &newest {
+                Some((best_score, _)) if score <= *best_score => {}
+                _ => newest = Some((score, thread.id.clone())),
+            }
+        }
+    }
+
+    newest.map(|(_, thread_id)| thread_id).or(fallback_id)
+}
+
+fn thread_matches_working_directory(
+    thread: &responses::ThreadSummary,
+    working_directory: Option<&str>,
+) -> bool {
+    let Some(working_directory) = working_directory else {
+        return true;
+    };
+
+    thread.extra.get("cwd").and_then(Value::as_str) == Some(working_directory)
+}
+
+fn thread_recency_score(thread: &responses::ThreadSummary) -> Option<i64> {
+    parse_timestamp(thread.extra.get("updatedAt"))
+        .or_else(|| parse_timestamp(thread.extra.get("createdAt")))
+}
+
+fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().and_then(|raw| i64::try_from(raw).ok())),
+        Value::String(raw) => raw.parse::<i64>().ok(),
+        _ => None,
     }
 }
 
@@ -2499,6 +2621,30 @@ mod tests {
         answer: String,
     }
 
+    fn thread_summary(
+        id: &str,
+        cwd: Option<&str>,
+        updated_at: Option<i64>,
+        created_at: Option<i64>,
+    ) -> responses::ThreadSummary {
+        let mut extra = Map::new();
+        if let Some(cwd) = cwd {
+            extra.insert("cwd".to_string(), Value::String(cwd.to_string()));
+        }
+        if let Some(updated_at) = updated_at {
+            extra.insert("updatedAt".to_string(), Value::from(updated_at));
+        }
+        if let Some(created_at) = created_at {
+            extra.insert("createdAt".to_string(), Value::from(created_at));
+        }
+
+        responses::ThreadSummary {
+            id: id.to_string(),
+            extra,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn normalize_input_combines_text_and_images() {
         let normalized = normalize_input(Input::Items(vec![
@@ -2747,6 +2893,34 @@ mod tests {
             }
             other => panic!("expected unknown item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn select_latest_thread_id_prefers_newest_matching_working_directory() {
+        let threads = vec![
+            thread_summary("thread_other", Some("/tmp/other"), Some(300), None),
+            thread_summary("thread_old", Some("/tmp/workspace"), None, Some(100)),
+            thread_summary("thread_new", Some("/tmp/workspace"), Some(200), None),
+        ];
+
+        assert_eq!(
+            select_latest_thread_id(&threads, Some("/tmp/workspace")),
+            Some("thread_new".to_string())
+        );
+    }
+
+    #[test]
+    fn select_latest_thread_id_falls_back_to_first_matching_thread_without_timestamps() {
+        let threads = vec![
+            thread_summary("thread_other", Some("/tmp/other"), None, None),
+            thread_summary("thread_match", Some("/tmp/workspace"), None, None),
+            thread_summary("thread_match_two", Some("/tmp/workspace"), None, None),
+        ];
+
+        assert_eq!(
+            select_latest_thread_id(&threads, Some("/tmp/workspace")),
+            Some("thread_match".to_string())
+        );
     }
 
     #[test]

@@ -464,11 +464,8 @@ async fn run() -> Result<(), SparkError> {
     let options = thread_options.build();
     let turn_options = turn_options.build();
     let mut thread = match resume_target {
-        Some(ResumeTarget::Last) => {
-            let thread_id = resolve_last_session_id(&codex).await?;
-            codex.resume_thread(thread_id, options)
-        }
-        Some(ResumeTarget::SessionId(session_id)) => codex.resume_thread(session_id, options),
+        Some(ResumeTarget::Last) => codex.resume_latest_thread(options),
+        Some(ResumeTarget::SessionId(session_id)) => codex.resume_thread_by_id(session_id, options),
         None => codex.start_thread(options),
     };
 
@@ -857,57 +854,6 @@ async fn ensure_authenticated(codex: &Codex) -> Result<(), SparkError> {
     }
 
     Ok(())
-}
-
-async fn resolve_last_session_id(codex: &Codex) -> Result<String, SparkError> {
-    let mut cursor: Option<String> = None;
-    let mut pages_scanned = 0usize;
-    let mut newest: Option<(i64, String)> = None;
-    let mut fallback_id: Option<String> = None;
-
-    loop {
-        pages_scanned += 1;
-        if pages_scanned > MAX_THREAD_LIST_PAGES {
-            return Err(SparkError::Config(format!(
-                "could not resolve latest session for --continue after scanning {MAX_THREAD_LIST_PAGES} pages"
-            )));
-        }
-
-        let params = requests::ThreadListParams {
-            limit: Some(THREAD_LIST_PAGE_LIMIT),
-            cursor: cursor.clone(),
-            ..Default::default()
-        };
-        let result = codex.thread_list(params).await?;
-
-        for thread in result.data {
-            if fallback_id.is_none() {
-                fallback_id = Some(thread.id.clone());
-            }
-            if let Some(score) = thread_recency_score(&thread) {
-                match &newest {
-                    Some((best_score, _)) if score <= *best_score => {}
-                    _ => newest = Some((score, thread.id)),
-                }
-            }
-        }
-
-        match result.next_cursor {
-            Some(next) => cursor = Some(next),
-            None => break,
-        }
-    }
-
-    if let Some((_, thread_id)) = newest {
-        return Ok(thread_id);
-    }
-    if let Some(thread_id) = fallback_id {
-        return Ok(thread_id);
-    }
-
-    Err(SparkError::Config(
-        "no recorded sessions found for --continue; start a spark session first or use --resume <session_id>".to_string(),
-    ))
 }
 
 #[derive(Debug)]

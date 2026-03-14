@@ -51,10 +51,12 @@ async fn seed_session(
     config: StdioConfig,
     token: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    let working_directory = std::env::current_dir()?.to_string_lossy().to_string();
     let codex = Codex::spawn_stdio(config).await?;
     let mut thread = codex.start_thread(
         ThreadOptions::builder()
             .model("gpt-5.3-codex-spark")
+            .working_directory(working_directory)
             .model_reasoning_effort(ModelReasoningEffort::XHigh)
             .build(),
     );

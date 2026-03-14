@@ -97,6 +97,23 @@ println!("response: {final_response}");
 # }
 ```
 
+Resume helpers are also available in the high-level API: use `resume_thread_by_id(...)` when you already have a recorded thread id, or `resume_latest_thread(...)` to pick the most recent recorded thread for a workspace.
+
+```rust
+# use codex_app_server_sdk::api::{Codex, ThreadOptions};
+# use codex_app_server_sdk::StdioConfig;
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let _by_id = codex.resume_thread_by_id("thread_123", ThreadOptions::default());
+let _latest = codex.resume_latest_thread(
+    ThreadOptions::builder()
+        .working_directory("/path/to/project")
+        .build(),
+);
+# Ok(())
+# }
+```
+
 ## Typed output schema
 
 ```rust

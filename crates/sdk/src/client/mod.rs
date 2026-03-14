@@ -259,7 +259,15 @@ impl CodexClient {
     }
 
     pub fn resume_thread(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
-        self.as_api().resume_thread(id, options)
+        self.resume_thread_by_id(id, options)
+    }
+
+    pub fn resume_thread_by_id(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
+        self.as_api().resume_thread_by_id(id, options)
+    }
+
+    pub fn resume_latest_thread(&self, options: ThreadOptions) -> Thread {
+        self.as_api().resume_latest_thread(options)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {

@@ -18,6 +18,8 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 - High-level typed thread helpers:
   - `Codex::ask(...)`
   - `Codex::ask_with_options(...)`
+  - `Codex::resume_thread_by_id(...)`
+  - `Codex::resume_latest_thread(...)`
   - `Thread::run(...)`
   - `Thread::run_streamed(...)`
 - Typed schema generation via `OpenAiSerializable` and `openai_json_schema_for::<T>()`.
@@ -85,6 +87,34 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+
+Resume a recorded thread explicitly by id:
+
+```rust
+# use codex_app_server_sdk::api::{Codex, ThreadOptions};
+# use codex_app_server_sdk::StdioConfig;
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let mut thread = codex.resume_thread_by_id("thread_123", ThreadOptions::default());
+# Ok(())
+# }
+```
+
+Resume the latest recorded thread for a workspace:
+
+```rust
+# use codex_app_server_sdk::api::{Codex, ThreadOptions};
+# use codex_app_server_sdk::StdioConfig;
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let codex = Codex::spawn_stdio(StdioConfig::default()).await?;
+let mut thread = codex.resume_latest_thread(
+    ThreadOptions::builder()
+        .working_directory("/path/to/project")
+        .build(),
+);
+# Ok(())
+# }
+```
 
 `AgentMessageItem.phase` mirrors the app-server's optional `agentMessage.phase` field (`commentary` or `final_answer`). Use `message.is_final_answer()` to identify the final turn message from `ItemCompleted`; `Turn.final_response` and `ask(...)` already prefer the `final_answer` item when the server provides it and otherwise fall back to the last completed agent message.
 
