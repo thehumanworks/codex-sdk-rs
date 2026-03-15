@@ -4,7 +4,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 ## Status
 
-- `0.4.0`
+- `0.5.0`
 - Focused on deterministic automation: explicit timeouts and no implicit retries.
 - Typed v2 request methods with raw JSON fallback for protocol drift.
 
@@ -12,10 +12,10 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 - `stdio`: spawn `codex app-server` locally.
 - `ws` (always enabled): websocket transport with explicit startup and connection APIs.
-  - Use `connect_ws` to connect directly without any process management (useful for existing public or loopback URLs).
+  - Use `connect_ws` to connect directly to `ws://` or `wss://` endpoints without any process management (useful for existing public or loopback URLs).
   - Use `start_ws_daemon` to reuse or start `codex app-server --listen ...` with separate `listen_url` and `connect_url`.
   - Use `start_ws_blocking` when the SDK should own the child process lifecycle instead of leaving a daemon running.
-  - `start_and_connect_ws` remains as the loopback convenience wrapper for `ws://127.0.0.1:*`, `ws://[::1]:*`, and `ws://localhost:*`.
+  - `start_and_connect_ws` remains the loopback convenience wrapper for `ws://127.0.0.1:*`, `ws://[::1]:*`, and `ws://localhost:*`; `wss://` URLs are connect-only and are never auto-started.
   - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
 
 ## Quickstart (stdio)
@@ -188,7 +188,7 @@ println!("response: {}", turn.final_response);
 # }
 ```
 
-The same `start_thread(...)`, `run(...)`, and `run_streamed(...)` flow works for stdio and ws transports.
+The same `start_thread(...)`, `run(...)`, and `run_streamed(...)` flow works for stdio, `ws://`, and `wss://` transports.
 
 For an exposed bind, use separate URLs:
 
