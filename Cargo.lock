@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "codex-app-server-sdk"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "codex-app-server-sdk-macros",
@@ -674,6 +674,7 @@ dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

@@ -18,6 +18,10 @@ async fn connect_ws_transport_with_connector(
     let parsed = Url::parse(url)
         .map_err(|err| ClientError::TransportSend(format!("invalid websocket URL: {err}")))?;
 
+    if parsed.scheme() == "wss" {
+        ensure_rustls_crypto_provider();
+    }
+
     let (stream, _) =
         tokio_tungstenite::connect_async_tls_with_config(parsed.as_str(), None, false, connector)
             .await
@@ -116,6 +120,12 @@ async fn connect_ws_transport_with_connector(
     })
 }
 
+fn ensure_rustls_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -131,6 +141,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_ws_transport_supports_wss_urls() -> anyhow::Result<()> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let generated = generate_simple_self_signed(vec!["localhost".to_string()])?;
         let cert_der = CertificateDer::from(generated.cert.der().to_vec());
         let key_der = generated.key_pair.serialize_der();
