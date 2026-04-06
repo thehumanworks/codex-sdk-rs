@@ -3,5 +3,6 @@ members = [
     "codex-app-server-sdk-macros",
     "crates/sdk",
     "crates/spark",
+    "crates/agent",
 ]
 resolver = "3"

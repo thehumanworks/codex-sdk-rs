@@ -1,0 +1,1 @@
+echo $CURSOR_API_KEY

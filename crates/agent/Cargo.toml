@@ -1,15 +1,18 @@
 [package]
-name = "spark"
+name = "agent"
 version = "0.1.0"
 edition = "2024"
-description = "Spark CLI for codex-app-server-sdk"
+description = "Agent CLI using codex-app-server-sdk"
 license = "MIT"
 repository = "https://github.com/thehumanworks/codex-app-server-sdk"
 
 [dependencies]
+anyhow = "1.0.102"
 codex-app-server-sdk = { path = "../sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
 toml = "0.8"
+owo-colors = { version = "4", features = ["supports-colors"] }
+clap = { version = "4", features = ["derive"] }
