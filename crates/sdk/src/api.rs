@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
@@ -19,7 +20,8 @@ use crate::schema::OpenAiSerializable;
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ApprovalMode {
     Never,
     OnRequest,
@@ -38,7 +40,8 @@ impl ApprovalMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SandboxMode {
     ReadOnly,
     WorkspaceWrite,
@@ -55,13 +58,15 @@ impl SandboxMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ModelReasoningEffort {
     None,
     Minimal,
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
     XHigh,
 }
 
@@ -78,7 +83,8 @@ impl ModelReasoningEffort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ModelReasoningSummary {
     None,
     Auto,
@@ -97,7 +103,8 @@ impl ModelReasoningSummary {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Personality {
     None,
     Friendly,
@@ -114,7 +121,8 @@ impl Personality {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum WebSearchMode {
     Disabled,
     Cached,
@@ -131,7 +139,8 @@ impl WebSearchMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum CollaborationModeKind {
     Plan,
     Default,
@@ -1750,6 +1759,26 @@ async fn pump_turn_events(
                         break;
                     }
                 }
+                ServerNotification::ItemReasoningSummaryTextDelta(delta)
+                | ServerNotification::ItemReasoningTextDelta(delta)
+                    if matches_target_from_extra(&delta.extra, &thread_id, Some(&turn_id)) =>
+                {
+                    let text = delta.delta.or(delta.text).unwrap_or_default();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let item = ThreadItem::Reasoning(ReasoningItem {
+                        id: delta.item_id.unwrap_or_default(),
+                        text,
+                    });
+                    if tx
+                        .send(Ok(ThreadEvent::ItemUpdated { item }))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
                 ServerNotification::TurnCompleted(payload)
                     if payload.turn.id == turn_id
                         && matches_target_from_extra(
@@ -2632,6 +2661,8 @@ fn parse_mcp_tool_call_status(status: &str) -> McpToolCallStatus {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
@@ -2649,6 +2680,60 @@ mod tests {
     )]
     struct StructuredReply {
         answer: String,
+    }
+
+    #[test]
+    fn public_string_enums_serde_as_codex_config_values() {
+        #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+        struct ConfigValues {
+            approval_policy: ApprovalMode,
+            sandbox_mode: SandboxMode,
+            model_reasoning_effort: ModelReasoningEffort,
+            model_reasoning_summary: ModelReasoningSummary,
+            personality: Personality,
+            web_search: WebSearchMode,
+            collaboration_mode: CollaborationModeKind,
+        }
+
+        let parsed: ConfigValues = toml::from_str(
+            r#"
+approval_policy = "on-request"
+sandbox_mode = "danger-full-access"
+model_reasoning_effort = "xhigh"
+model_reasoning_summary = "detailed"
+personality = "pragmatic"
+web_search = "live"
+collaboration_mode = "plan"
+"#,
+        )
+        .expect("deserialize TOML config values");
+
+        assert_eq!(
+            parsed,
+            ConfigValues {
+                approval_policy: ApprovalMode::OnRequest,
+                sandbox_mode: SandboxMode::DangerFullAccess,
+                model_reasoning_effort: ModelReasoningEffort::XHigh,
+                model_reasoning_summary: ModelReasoningSummary::Detailed,
+                personality: Personality::Pragmatic,
+                web_search: WebSearchMode::Live,
+                collaboration_mode: CollaborationModeKind::Plan,
+            }
+        );
+
+        let value = serde_json::to_value(&parsed).expect("serialize config values");
+        assert_eq!(
+            value,
+            json!({
+                "approval_policy": "on-request",
+                "sandbox_mode": "danger-full-access",
+                "model_reasoning_effort": "xhigh",
+                "model_reasoning_summary": "detailed",
+                "personality": "pragmatic",
+                "web_search": "live",
+                "collaboration_mode": "plan",
+            })
+        );
     }
 
     fn thread_summary(
@@ -2763,6 +2848,18 @@ mod tests {
             ),
             (
                 json!({
+                    "id": "reason_1",
+                    "type": "reasoning",
+                    "summary": ["checking docs"],
+                    "content": ["raw chain"]
+                }),
+                ThreadItem::Reasoning(ReasoningItem {
+                    id: "reason_1".to_string(),
+                    text: "checking docs\nraw chain".to_string(),
+                }),
+            ),
+            (
+                json!({
                     "id": "tool_1",
                     "type": "dynamicToolCall",
                     "tool": "tool/search",
@@ -2852,6 +2949,81 @@ mod tests {
         for (raw, expected) in cases {
             assert_eq!(parse_thread_item(raw), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn pump_turn_events_emits_reasoning_text_deltas() {
+        let (server_tx, server_rx) = tokio::sync::broadcast::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let pump = tokio::spawn(pump_turn_events(
+            server_rx,
+            event_tx,
+            "thread_1".to_string(),
+            "turn_1".to_string(),
+        ));
+
+        let mut extra = Map::new();
+        extra.insert(
+            "threadId".to_string(),
+            Value::String("thread_1".to_string()),
+        );
+        extra.insert("turnId".to_string(), Value::String("turn_1".to_string()));
+
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::ItemReasoningSummaryTextDelta(
+                    crate::protocol::notifications::DeltaNotification {
+                        item_id: Some("reason_1".to_string()),
+                        delta: Some("checking docs".to_string()),
+                        text: None,
+                        summary_index: Some(0),
+                        extra: extra.clone(),
+                    },
+                ),
+            ))
+            .expect("send summary reasoning delta");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("reasoning summary event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::ItemUpdated {
+                item: ThreadItem::Reasoning(ReasoningItem {
+                    id: "reason_1".to_string(),
+                    text: "checking docs".to_string(),
+                }),
+            }
+        );
+
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::ItemReasoningTextDelta(
+                    crate::protocol::notifications::DeltaNotification {
+                        item_id: Some("reason_1".to_string()),
+                        delta: Some("raw reasoning".to_string()),
+                        text: None,
+                        summary_index: None,
+                        extra,
+                    },
+                ),
+            ))
+            .expect("send raw reasoning delta");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("reasoning text event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::ItemUpdated {
+                item: ThreadItem::Reasoning(ReasoningItem {
+                    id: "reason_1".to_string(),
+                    text: "raw reasoning".to_string(),
+                }),
+            }
+        );
+
+        pump.abort();
     }
 
     #[test]

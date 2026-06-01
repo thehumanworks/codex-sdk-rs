@@ -29,3 +29,4 @@ anyhow = "1"
 rcgen = "0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 tokio-rustls = "0.26"
+toml = "0.8"

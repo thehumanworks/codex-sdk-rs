@@ -354,6 +354,16 @@ If startup fails with a codex lookup error, run `which codex` and ensure your sh
 
 See `docs/spark-session-resumption.md` for additional details.
 
+## `agx` CLI
+
+`agx` is an agent-focused CLI that loads Codex custom agent TOML files directly.
+
+`agx --agent <name>` first searches for `.codex/agents/<name>.toml` from the invocation directory upward through the current repo, then falls back to `~/.codex/agents/<name>.toml`. If both files exist, the project-local file is selected; agent files are not merged.
+
+Use `--scope project` to search only project-local agent paths, or `--scope user` to search only `~/.codex/agents`. When an agent is selected, `agx` prints the active agent name, instructions preview, model when set, and resolved config path before starting the turn.
+
+By default, `agx` streams mapped turn events as they arrive. Use `--last-response-only` to suppress the startup banner and streamed events and print only the final agent response text.
+
 ## Integration tests
 
 These tests execute against a real local `codex app-server` process:

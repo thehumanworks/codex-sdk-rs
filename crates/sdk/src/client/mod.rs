@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Child;
@@ -273,24 +274,55 @@ impl WsServerHandle {
     }
 
     pub fn shutdown(&mut self) -> Result<(), ClientError> {
-        if let Some(process_group_id) = self.process_group_id.take() {
-            let _ = terminate_process_group(process_group_id);
-        }
-
+        let process_group_id = self.process_group_id.take();
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
 
+        let bind_target = websocket_bind_target(&self.listen_url)
+            .or_else(|| websocket_bind_target(&self.connect_url));
+
+        if let Some(process_group_id) = process_group_id {
+            let _ = terminate_process_group(process_group_id);
+        }
+
+        let mut child_exited = false;
+        for attempt in 0..20 {
+            if !child_exited && child.try_wait()?.is_some() {
+                child_exited = true;
+            }
+            if child_exited && bind_target.as_ref().is_none_or(websocket_port_is_free) {
+                return Ok(());
+            }
+            if attempt == 5
+                && let Some(process_group_id) = process_group_id
+            {
+                let _ = terminate_process_group(process_group_id);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        if let Some(process_group_id) = process_group_id {
+            let _ = kill_process_group(process_group_id);
+        }
+        if !child_exited {
+            let _ = child.kill();
+            let _ = child.wait()?;
+        }
+
         for _ in 0..20 {
-            if child.try_wait()?.is_some() {
+            if bind_target.as_ref().is_none_or(websocket_port_is_free) {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        let _ = child.kill();
-        let _ = child.wait()?;
-        Ok(())
+        let target = bind_target
+            .map(|(host, port)| format!("{host}:{port}"))
+            .unwrap_or_else(|| self.connect_url.clone());
+        Err(ClientError::TransportSend(format!(
+            "websocket app-server did not release `{target}` during shutdown"
+        )))
     }
 
     pub(crate) fn from_reused_existing(
@@ -346,23 +378,51 @@ impl Drop for WsServerHandle {
     }
 }
 
+fn websocket_bind_target(url: &str) -> Option<(String, u16)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.to_string();
+    let port = parsed.port()?;
+    Some((host, port))
+}
+
+fn websocket_port_is_free((host, port): &(String, u16)) -> bool {
+    TcpListener::bind((host.as_str(), *port)).is_ok()
+}
+
 #[cfg(unix)]
-fn terminate_process_group(process_group_id: u32) -> std::io::Result<()> {
-    let status = std::process::Command::new("kill")
-        .arg("-TERM")
-        .arg(format!("-{process_group_id}"))
-        .status()?;
-    if status.success() {
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
+    let process_group_id = i32::try_from(process_group_id)
+        .map_err(|_| std::io::Error::other("process group id is too large"))?;
+    let result = unsafe { kill(-process_group_id, signal) };
+    if result == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::other(format!(
-            "failed to terminate process group {process_group_id} with status {status}"
-        )))
+        Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(unix)]
+fn terminate_process_group(process_group_id: u32) -> std::io::Result<()> {
+    signal_process_group(process_group_id, 15)
+}
+
+#[cfg(unix)]
+fn kill_process_group(process_group_id: u32) -> std::io::Result<()> {
+    signal_process_group(process_group_id, 9)
 }
 
 #[cfg(not(unix))]
 fn terminate_process_group(_process_group_id: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_process_group_id: u32) -> std::io::Result<()> {
     Ok(())
 }
 

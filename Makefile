@@ -1,4 +1,4 @@
-.PHONY: bump-version update-sdk-release-metadata publish-crate
+.PHONY: bump-version update-sdk-release-metadata publish-crate install-agx
 
 bump-version:
 	@test -n "$(VERSION)" || (echo "VERSION is required" && exit 1)
@@ -12,3 +12,6 @@ update-sdk-release-metadata:
 publish-crate:
 	@test -n "$(CRATE)" || (echo "CRATE is required" && exit 1)
 	cargo publish -p "$(CRATE)" $(ARGS)
+
+install-agx:
+	cargo install --path crates/agx --force --root "$(HOME)/.local"
