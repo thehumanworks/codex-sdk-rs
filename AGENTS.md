@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - Workspace root uses a virtual manifest (`Cargo.toml`) with members:
 - `crates/sdk`: SDK library crate (`codex-app-server-sdk`).
-- `crates/spark`: Spark CLI crate (`spark`) that depends on the SDK.
+- `crates/luna`: Luna CLI crate (`luna`) that depends on the SDK.
 - `codex-app-server-sdk-macros`: proc-macro crate used by the SDK.
 - `crates/sdk/src/lib.rs`: SDK crate exports.
 - `crates/sdk/src/client/mod.rs`: async client, RPC lifecycle, handshake/readiness.
@@ -14,8 +14,8 @@
 - `crates/sdk/src/error.rs`: SDK/client error types.
 - `crates/sdk/examples/`: runnable SDK samples.
 - `crates/sdk/tests/`: SDK protocol tests + live integration tests (run by default).
-- `crates/spark/src/main.rs`: Spark CLI entrypoint.
-- `crates/spark/tests/`: Spark CLI integration tests.
+- `crates/luna/src/main.rs`: Luna CLI entrypoint.
+- `crates/luna/tests/`: Luna CLI integration tests.
 - `adrs/`: architecture decision records.
 
 ## Build, Test, and Development Commands
@@ -25,16 +25,16 @@
 - `cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture`: real `codex app-server` SDK tests.
 - `cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture`: real high-level API tests.
 - `cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture`: real websocket transport tests.
-- `cargo test -p spark --test integration_spark -- --nocapture`: real `spark` CLI tests (resume/continue flows).
+- `cargo test -p luna --test integration_luna -- --nocapture`: real `luna` CLI tests (resume/continue flows).
 - `cargo run -p codex-app-server-sdk --example raw_fallback`: raw RPC smoke test.
 - `cargo run -p codex-app-server-sdk --example turn_start_stream`: live turn streaming test.
-- `cargo run -p spark -- exec "..."`: one-shot run (streamed by default) with defaults `gpt-5.3-codex-spark` + `xhigh` (override via flags).
-- `cargo run -p spark -- exec --stdio "..."`: one-shot run over stdio transport instead of default websocket.
-- `cargo run -p spark -- exec --cwd <path> "..."`: one-shot run with explicit Codex working directory.
-- `cargo run -p spark -- exec --final-response "..."`: one-shot run that only prints final response content.
-- `cargo run -p spark -- exec --continue "..."`: continue the most recent recorded session.
-- `cargo run -p spark -- exec --resume <session_id> "..."`: resume a specific session id.
-- `cargo run -p spark -- start`: ensure the default websocket daemon is running and exit.
+- `cargo run -p luna -- exec "..."` (or `cargo run -p luna -- x "..."`): one-shot run (streamed by default) with defaults `gpt-5.6-luna` + `max` (override via flags).
+- `cargo run -p luna -- exec --stdio "..."`: one-shot run over stdio transport instead of default websocket.
+- `cargo run -p luna -- exec --cwd <path> "..."`: one-shot run with explicit Codex working directory.
+- `cargo run -p luna -- exec --final-response "..."`: one-shot run that only prints final response content.
+- `cargo run -p luna -- exec --continue "..."`: continue the most recent recorded session.
+- `cargo run -p luna -- exec --resume <session_id> "..."`: resume a specific session id.
+- `cargo run -p luna -- start`: ensure the default websocket daemon is running and exit.
 
 ## CI Merge Gate (Source of Truth)
 - Required for merge:
@@ -45,13 +45,13 @@
 - `cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture`
 - `cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture`
 - `cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture`
-- `cargo test -p spark --test integration_spark -- --nocapture`
+- `cargo test -p luna --test integration_luna -- --nocapture`
 - If live tests fail, treat the failure as actionable and fix the underlying cause (do not dismiss as environmental).
 
 ## Agent Workflow
 1. Preflight: `rustc --version`, `cargo --version`, `codex --version`.
 2. Implement minimal typed changes first; preserve raw fallback APIs for protocol drift.
-3. Validate in order: `fmt`, `check --workspace`, `test --workspace`, `test -p codex-app-server-sdk --test integration_stdio`, `test -p codex-app-server-sdk --test integration_api_stdio`, `test -p codex-app-server-sdk --test integration_ws`, `test -p spark --test integration_spark`.
+3. Validate in order: `fmt`, `check --workspace`, `test --workspace`, `test -p codex-app-server-sdk --test integration_stdio`, `test -p codex-app-server-sdk --test integration_api_stdio`, `test -p codex-app-server-sdk --test integration_ws`, `test -p luna --test integration_luna`.
 4. If behavior changes, update `crates/sdk/examples/` and `README.md` in the same PR.
 
 ## Agent Communication & Verification
@@ -135,10 +135,10 @@
 - Use `ThreadOptions::builder()` for API-level thread defaults; it now covers protocol-oriented fields beyond CLI parity (for example `model_provider`, `personality`, `sandbox_policy`, collaboration mode payload, and config/dynamic tool extras).
 - Use `TurnOptions::builder()` for per-turn control and overrides; it covers `output_schema` plus per-turn `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox policy, collaboration mode, and raw extra fields.
 - Typed schema generation is provided by `OpenAiSerializable` + `openai_json_schema_for::<T>()` (backed by `schemars`); derived schemas strip `$schema` metadata for OpenAI/Codex structured output compatibility.
-- The `spark` binary exposes explicit commands: `exec` for one-shot runs, `start` to ensure the websocket daemon is running, and `sessions` for recorded-session listing. `spark exec` supports session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), reads websocket URL from `--ws-url` or `CODEX_WEB_SERVER_URL`, sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and defaults model + reasoning to (`gpt-5.3-codex-spark`, `xhigh`) while allowing optional overrides (`--model`, `--reasoning-effort`, and related config flags).
+- The `luna` binary exposes explicit commands: `exec` (also available as `x`) for one-shot runs, `start` to ensure the websocket daemon is running, and `sessions` for recorded-session listing. `luna exec` supports session continuation (`--continue` for latest, `--resume <session_id>` for explicit ids), defaults to websocket transport at `ws://127.0.0.1:4222` (with `--stdio` override), reads websocket URL from `--ws-url` or `CODEX_WEB_SERVER_URL`, sets Codex `cwd` to the invocation directory by default (override with `--cwd <path>`), streams `agentMessage` deltas to stdout by default, supports `--final-response` for final-message-only output, and defaults model + reasoning to (`gpt-5.6-luna`, `max`) while allowing optional overrides (`--model`, `--reasoning-effort`, and related config flags).
 - For websocket v2 compatibility, route search/sandbox workspace-write tuning through config overrides (`web_search`, `sandbox_workspace_write.network_access`, `sandbox_workspace_write.writable_roots`) and avoid relying on legacy extra fields like `webSearchEnabled`, `networkAccessEnabled`, `additionalDirectories`, or `skipGitRepoCheck` because app-server thread/turn params ignore them.
-- `spark exec --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
-- On macOS, `spark` may resolve to an unrelated global Bun binary (`/usr/local/bin/spark`); verify with `which -a spark` and use `cargo run -p spark -- ...` or `./target/release/spark ...` to run the repository binary.
+- `luna exec --agent <name>` resolves `~/.codex/config.toml` under `[agents.<name>]`, reads `config_file` (relative to the declaring config file), and maps role config instructions into thread `developer_instructions` with precedence: `developer_instructions` -> `model_instructions_file` contents -> role `description`.
+- Use `cargo run -p luna -- ...` or `./target/release/luna ...` to run the repository binary explicitly.
 
 ## Critical Paths and Review Focus
 - High-risk paths:

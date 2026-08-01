@@ -2,7 +2,7 @@
 members = [
     "codex-app-server-sdk-macros",
     "crates/sdk",
-    "crates/spark",
+    "crates/luna",
     "crates/agx",
 ]
 resolver = "3"

@@ -1,10 +1,10 @@
 [package]
-name = "spark"
+name = "luna"
 version = "0.1.0"
 edition = "2024"
-description = "Spark CLI for codex-app-server-sdk"
+description = "Luna CLI for codex-app-server-sdk"
 license = "MIT"
-repository = "https://github.com/thehumanworks/codex-app-server-sdk"
+repository = "https://github.com/thehumanworks/codex-sdk-rs"
 
 [dependencies]
 codex-app-server-sdk = { path = "../sdk" }

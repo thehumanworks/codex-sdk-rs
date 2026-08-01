@@ -68,6 +68,8 @@ pub enum ModelReasoningEffort {
     High,
     #[serde(rename = "xhigh")]
     XHigh,
+    Max,
+    Ultra,
 }
 
 impl ModelReasoningEffort {
@@ -79,6 +81,8 @@ impl ModelReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 }
@@ -2734,6 +2738,24 @@ collaboration_mode = "plan"
                 "collaboration_mode": "plan",
             })
         );
+    }
+
+    #[test]
+    fn max_and_ultra_reasoning_efforts_serde_as_codex_values() {
+        for (effort, expected) in [
+            (ModelReasoningEffort::Max, "max"),
+            (ModelReasoningEffort::Ultra, "ultra"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(effort).expect("serialize reasoning effort"),
+                json!(expected)
+            );
+            assert_eq!(
+                serde_json::from_value::<ModelReasoningEffort>(json!(expected))
+                    .expect("deserialize reasoning effort"),
+                effort
+            );
+        }
     }
 
     fn thread_summary(

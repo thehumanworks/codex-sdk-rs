@@ -1,16 +1,16 @@
-alias is := install-spark
+alias is := install-luna
 
 default:
     @just --list
 
-install-spark:
-    cargo install --path crates/spark --bin spark --force --root "$HOME/.local"
+install-luna:
+    cargo install --path crates/luna --bin luna --force --root "$HOME/.local"
 
 bump-version VERSION MANIFEST:
-    python3 scripts/bump-package-version.py {{MANIFEST}} {{VERSION}}
+    python3 scripts/bump-package-version.py {{ MANIFEST }} {{ VERSION }}
 
 prepare-sdk-release VERSION:
-    python3 scripts/update-sdk-release-metadata.py {{VERSION}}
+    python3 scripts/update-sdk-release-metadata.py {{ VERSION }}
 
 publish-crate CRATE:
-    cargo publish -p {{CRATE}}
+    cargo publish -p {{ CRATE }}

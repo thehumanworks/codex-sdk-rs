@@ -16,8 +16,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-const APP_NAME: &str = "spark";
-const MODEL: &str = "gpt-5.3-codex-spark";
+const APP_NAME: &str = "luna";
+const MODEL: &str = "gpt-5.6-luna";
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
 const CODEX_WEB_SERVER_URL_ENV: &str = "CODEX_WEB_SERVER_URL";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
@@ -26,17 +26,18 @@ const SESSION_PREVIEW_CHAR_LIMIT: usize = 96;
 
 const USAGE: &str = "\
 Usage:
-  spark exec [OPTIONS] [PROMPT...]
-  spark start [--ws-url URL]
-  spark sessions [--all] [--ws-url URL | --stdio]
+  luna exec [OPTIONS] [PROMPT...]
+  luna x [OPTIONS] [PROMPT...]
+  luna start [--ws-url URL]
+  luna sessions [--all] [--ws-url URL | --stdio]
 
-`spark exec` runs one turn with:
-  model default: gpt-5.3-codex-spark
-  reasoning effort default: xhigh
+`luna exec` (or `luna x`) runs one turn with:
+  model default: gpt-5.6-luna
+  reasoning effort default: max
   transport default: websocket (ws://127.0.0.1:4222)
 
 Commands:
-  exec                             Run one turn with a prompt argument or stdin
+  exec, x                          Run one turn with a prompt argument or stdin
   start                            Ensure the websocket daemon is running, then exit
   sessions                         List recorded sessions ordered by last activity
                                    (default: sessions from current directory; use --all for all)
@@ -48,9 +49,9 @@ Options:
                                    exec/start also read CODEX_WEB_SERVER_URL)
   --no-daemon                      Do not manage or spawn a local websocket app-server daemon
   --stdio                          Use app-server stdio transport instead of websocket
-  --model MODEL                    Override model (default: gpt-5.3-codex-spark)
+  --model MODEL                    Override model (default: gpt-5.6-luna)
   --model-provider PROVIDER        Override model provider
-  --reasoning-effort LEVEL         Override reasoning effort: none|minimal|low|medium|high|xhigh
+  --reasoning-effort LEVEL         Override reasoning effort: none|minimal|low|medium|high|xhigh|max|ultra
   --reasoning-summary MODE         Override reasoning summary: none|auto|concise|detailed
   --model-verbosity LEVEL          Set model verbosity via config: low|medium|high
   --config-profile NAME            Set config profile override
@@ -84,7 +85,7 @@ Options:
   --all                            Show all sessions (used with sessions command)
   -h, --help                       Show this help
 
-If PROMPT is omitted, `spark exec` reads the prompt from stdin.
+If PROMPT is omitted, `luna exec` and `luna x` read the prompt from stdin.
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,7 +206,7 @@ struct CliDynamicToolSpec {
 }
 
 #[derive(Debug, Error)]
-enum SparkError {
+enum LunaError {
     #[error("{0}")]
     Usage(String),
     #[error("{0}")]
@@ -228,7 +229,7 @@ enum SparkError {
 async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(SparkError::Usage(message)) => {
+        Err(LunaError::Usage(message)) => {
             eprintln!("{message}\n");
             eprintln!("{USAGE}");
             ExitCode::FAILURE
@@ -240,7 +241,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run() -> Result<(), SparkError> {
+async fn run() -> Result<(), LunaError> {
     let command = parse_cli_args(env::args().skip(1))?;
     let cli = match command {
         ParsedCommand::Help => {
@@ -441,8 +442,8 @@ async fn run() -> Result<(), SparkError> {
     }
 
     let mut turn_options = TurnOptions::builder();
-    turn_options = turn_options
-        .model_reasoning_effort(reasoning_effort.unwrap_or(ModelReasoningEffort::XHigh));
+    turn_options =
+        turn_options.model_reasoning_effort(reasoning_effort.unwrap_or(ModelReasoningEffort::Max));
     if let Some(reasoning_summary) = reasoning_summary {
         turn_options = turn_options.model_reasoning_summary(reasoning_summary);
     }
@@ -458,7 +459,7 @@ async fn run() -> Result<(), SparkError> {
 
     let codex = connect_task
         .await
-        .map_err(|error| SparkError::Config(format!("transport connect task failed: {error}")))??;
+        .map_err(|error| LunaError::Config(format!("transport connect task failed: {error}")))??;
 
     ensure_authenticated(&codex).await?;
 
@@ -498,7 +499,7 @@ async fn run() -> Result<(), SparkError> {
     Ok(())
 }
 
-async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkError> {
+async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), LunaError> {
     let mut stdout = io::stdout();
     let mut saw_terminal = false;
     let mut saw_delta_for_message = false;
@@ -542,13 +543,10 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
                 break;
             }
             ThreadEvent::TurnFailed { error } => {
-                return Err(SparkError::Config(format!(
-                    "turn failed: {}",
-                    error.message
-                )));
+                return Err(LunaError::Config(format!("turn failed: {}", error.message)));
             }
             ThreadEvent::Error { message } => {
-                return Err(SparkError::Config(format!("stream error: {message}")));
+                return Err(LunaError::Config(format!("stream error: {message}")));
             }
             ThreadEvent::ThreadStarted { .. }
             | ThreadEvent::TurnStarted
@@ -557,7 +555,7 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
     }
 
     if !saw_terminal {
-        return Err(SparkError::Config(
+        return Err(LunaError::Config(
             "stream closed before receiving turn completion".to_string(),
         ));
     }
@@ -569,7 +567,7 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
     Ok(())
 }
 
-async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), SparkError> {
+async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), LunaError> {
     let mut stdout = io::stdout();
 
     while let Some(next) = streamed.next_event().await {
@@ -610,19 +608,16 @@ async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), SparkErro
         };
 
         let line = serde_json::to_string(&json_event)
-            .map_err(|err| SparkError::Config(format!("failed to serialize event: {err}")))?;
+            .map_err(|err| LunaError::Config(format!("failed to serialize event: {err}")))?;
         writeln!(stdout, "{line}")?;
 
         match event {
             ThreadEvent::TurnCompleted { .. } => break,
             ThreadEvent::TurnFailed { error } => {
-                return Err(SparkError::Config(format!(
-                    "turn failed: {}",
-                    error.message
-                )));
+                return Err(LunaError::Config(format!("turn failed: {}", error.message)));
             }
             ThreadEvent::Error { message } => {
-                return Err(SparkError::Config(format!("stream error: {message}")));
+                return Err(LunaError::Config(format!("stream error: {message}")));
             }
             _ => {}
         }
@@ -789,7 +784,7 @@ fn thread_item_to_json(item: &ThreadItem) -> Value {
     }
 }
 
-async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, SparkError> {
+async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, LunaError> {
     let config = WsConfig {
         url: url.to_string(),
         env: Default::default(),
@@ -803,7 +798,7 @@ async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, SparkErro
     Ok(client.as_api())
 }
 
-async fn start_ws_server(url: &str) -> Result<(), SparkError> {
+async fn start_ws_server(url: &str) -> Result<(), LunaError> {
     let config = WsConfig {
         url: url.to_string(),
         env: Default::default(),
@@ -813,7 +808,7 @@ async fn start_ws_server(url: &str) -> Result<(), SparkError> {
     Ok(())
 }
 
-async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
+async fn spawn_stdio_codex() -> Result<Codex, LunaError> {
     let codex_binary = resolve_codex_binary()?;
     let stdio_config = StdioConfig {
         codex_binary,
@@ -826,7 +821,7 @@ async fn spawn_stdio_codex() -> Result<Codex, SparkError> {
 /// 1. Rely on existing cached auth (auth.json) — check via `account_read`.
 /// 2. If not authenticated, try `CODEX_ID_TOKEN` + `CODEX_ACCESS_TOKEN` env vars (ChatGPT login).
 /// 3. If those aren't available, try `OPENAI_API_KEY` env var (API key login).
-async fn ensure_authenticated(codex: &Codex) -> Result<(), SparkError> {
+async fn ensure_authenticated(codex: &Codex) -> Result<(), LunaError> {
     // Check if the app-server already has valid cached auth.
     let account = codex
         .account_read(requests::GetAccountParams::default())
@@ -866,7 +861,7 @@ struct SessionListEntry {
     last_message: String,
 }
 
-async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), SparkError> {
+async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), LunaError> {
     let mut cursor: Option<String> = None;
     let mut pages_scanned = 0usize;
     let mut sessions = Vec::new();
@@ -874,7 +869,7 @@ async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), Sp
     loop {
         pages_scanned += 1;
         if pages_scanned > MAX_THREAD_LIST_PAGES {
-            return Err(SparkError::Config(format!(
+            return Err(LunaError::Config(format!(
                 "could not list sessions after scanning {MAX_THREAD_LIST_PAGES} pages"
             )));
         }
@@ -939,7 +934,7 @@ async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), Sp
 async fn resolve_last_message_preview(
     codex: &Codex,
     thread: &responses::ThreadSummary,
-) -> Result<String, SparkError> {
+) -> Result<String, LunaError> {
     if let Some(preview) = extract_summary_preview(&thread.extra) {
         return Ok(preview);
     }
@@ -1139,7 +1134,7 @@ fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn resolve_codex_binary() -> Result<String, SparkError> {
+fn resolve_codex_binary() -> Result<String, LunaError> {
     resolve_codex_binary_with(|program, args| {
         Command::new(program)
             .args(args)
@@ -1157,18 +1152,18 @@ struct CommandResult {
     stdout: String,
 }
 
-fn resolve_codex_binary_with<F>(mut run_command: F) -> Result<String, SparkError>
+fn resolve_codex_binary_with<F>(mut run_command: F) -> Result<String, LunaError>
 where
     F: FnMut(&str, &[&str]) -> io::Result<CommandResult>,
 {
     let result = run_command("which", &["codex"]).map_err(|error| {
-        SparkError::Config(format!(
+        LunaError::Config(format!(
             "failed to resolve codex binary via `which codex`: {error}"
         ))
     })?;
 
     if !result.success {
-        return Err(SparkError::Config(
+        return Err(LunaError::Config(
             "could not locate `codex` on PATH (which codex returned non-zero status)".to_string(),
         ));
     }
@@ -1179,7 +1174,7 @@ where
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| {
-            SparkError::Config(
+            LunaError::Config(
                 "could not locate `codex` on PATH (which codex produced empty output)".to_string(),
             )
         })?;
@@ -1187,7 +1182,7 @@ where
     Ok(resolved.to_string())
 }
 
-fn print_chunk<W: Write>(writer: &mut W, chunk: &str) -> Result<(), SparkError> {
+fn print_chunk<W: Write>(writer: &mut W, chunk: &str) -> Result<(), LunaError> {
     write!(writer, "{chunk}")?;
     writer.flush()?;
     Ok(())
@@ -1197,7 +1192,7 @@ fn ensure_message_separator<W: Write>(
     writer: &mut W,
     printed_any: bool,
     ended_with_newline: &mut bool,
-) -> Result<(), SparkError> {
+) -> Result<(), LunaError> {
     if printed_any && !*ended_with_newline {
         writeln!(writer)?;
         writer.flush()?;
@@ -1206,7 +1201,7 @@ fn ensure_message_separator<W: Write>(
     Ok(())
 }
 
-fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, SparkError> {
+fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, LunaError> {
     let mut command_kind: Option<CommandKind> = None;
     let mut agent: Option<String> = None;
     let mut working_directory: Option<String> = None;
@@ -1255,22 +1250,22 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--help" || arg == "-h" {
                 return Ok(ParsedCommand::Help);
             }
-            if arg == "exec" {
+            if command_kind.is_none() && (arg == "exec" || arg == "x") {
                 set_command_kind(&mut command_kind, CommandKind::Exec)?;
                 continue;
             }
-            if arg == "start" {
+            if command_kind.is_none() && arg == "start" {
                 set_command_kind(&mut command_kind, CommandKind::Start)?;
                 continue;
             }
-            if arg == "sessions" || arg == "--sessions" {
+            if (command_kind.is_none() && arg == "sessions") || arg == "--sessions" {
                 set_command_kind(&mut command_kind, CommandKind::Sessions)?;
                 sessions = true;
                 continue;
             }
             if arg == "--all" {
                 if sessions_all {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--all may only be provided once".to_string(),
                     ));
                 }
@@ -1284,7 +1279,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "-r" || arg == "--resume" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --resume".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --resume".to_string()))?;
                 set_resume_target(
                     &mut resume_target,
                     ResumeTarget::SessionId(normalize_session_id(&raw)?),
@@ -1301,9 +1296,9 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--agent" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --agent".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --agent".to_string()))?;
                 if agent.is_some() {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--agent may only be provided once".to_string(),
                     ));
                 }
@@ -1312,7 +1307,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if let Some(raw) = arg.strip_prefix("--agent=") {
                 if agent.is_some() {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--agent may only be provided once".to_string(),
                     ));
                 }
@@ -1322,7 +1317,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--cwd" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --cwd".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --cwd".to_string()))?;
                 set_working_directory(&mut working_directory, &raw)?;
                 continue;
             }
@@ -1333,7 +1328,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--ws-url" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --ws-url".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --ws-url".to_string()))?;
                 set_string_option_once(&mut websocket_url, &raw, "--ws-url")?;
                 continue;
             }
@@ -1344,7 +1339,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--model" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --model".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --model".to_string()))?;
                 set_string_option_once(&mut model, &raw, "--model")?;
                 continue;
             }
@@ -1354,7 +1349,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--model-provider" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --model-provider".to_string())
+                    LunaError::Usage("missing value for --model-provider".to_string())
                 })?;
                 set_string_option_once(&mut model_provider, &raw, "--model-provider")?;
                 continue;
@@ -1365,7 +1360,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--reasoning-effort" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --reasoning-effort".to_string())
+                    LunaError::Usage("missing value for --reasoning-effort".to_string())
                 })?;
                 set_option_once(
                     &mut reasoning_effort,
@@ -1384,7 +1379,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--reasoning-summary" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --reasoning-summary".to_string())
+                    LunaError::Usage("missing value for --reasoning-summary".to_string())
                 })?;
                 set_option_once(
                     &mut reasoning_summary,
@@ -1403,7 +1398,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--model-verbosity" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --model-verbosity".to_string())
+                    LunaError::Usage("missing value for --model-verbosity".to_string())
                 })?;
                 set_option_once(
                     &mut model_verbosity,
@@ -1422,7 +1417,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--config-profile" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --config-profile".to_string())
+                    LunaError::Usage("missing value for --config-profile".to_string())
                 })?;
                 set_string_option_once(&mut config_profile, &raw, "--config-profile")?;
                 continue;
@@ -1433,7 +1428,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--approval-policy" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --approval-policy".to_string())
+                    LunaError::Usage("missing value for --approval-policy".to_string())
                 })?;
                 set_option_once(
                     &mut approval_policy,
@@ -1453,7 +1448,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--sandbox" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --sandbox".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --sandbox".to_string()))?;
                 set_option_once(&mut sandbox_mode, parse_sandbox_mode(&raw)?, "--sandbox")?;
                 continue;
             }
@@ -1463,7 +1458,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--sandbox-policy-json" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --sandbox-policy-json".to_string())
+                    LunaError::Usage("missing value for --sandbox-policy-json".to_string())
                 })?;
                 set_string_option_once(&mut sandbox_policy_json, &raw, "--sandbox-policy-json")?;
                 continue;
@@ -1490,7 +1485,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--sandbox-writable-root" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --sandbox-writable-root".to_string())
+                    LunaError::Usage("missing value for --sandbox-writable-root".to_string())
                 })?;
                 sandbox_writable_roots.push(normalize_working_directory(&raw)?);
                 continue;
@@ -1501,7 +1496,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--web-search-mode" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --web-search-mode".to_string())
+                    LunaError::Usage("missing value for --web-search-mode".to_string())
                 })?;
                 set_option_once(
                     &mut web_search_mode,
@@ -1520,7 +1515,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--dynamic-tools-json" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --dynamic-tools-json".to_string())
+                    LunaError::Usage("missing value for --dynamic-tools-json".to_string())
                 })?;
                 set_string_option_once(&mut dynamic_tools_json, &raw, "--dynamic-tools-json")?;
                 continue;
@@ -1531,7 +1526,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--personality" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --personality".to_string())
+                    LunaError::Usage("missing value for --personality".to_string())
                 })?;
                 set_option_once(&mut personality, parse_personality(&raw)?, "--personality")?;
                 continue;
@@ -1542,7 +1537,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--base-instructions" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --base-instructions".to_string())
+                    LunaError::Usage("missing value for --base-instructions".to_string())
                 })?;
                 set_string_option_once(&mut base_instructions, &raw, "--base-instructions")?;
                 continue;
@@ -1553,7 +1548,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--developer-instructions" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --developer-instructions".to_string())
+                    LunaError::Usage("missing value for --developer-instructions".to_string())
                 })?;
                 set_string_option_once(
                     &mut developer_instructions,
@@ -1593,7 +1588,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if arg == "--config" {
                 let raw = iter
                     .next()
-                    .ok_or_else(|| SparkError::Usage("missing value for --config".to_string()))?;
+                    .ok_or_else(|| LunaError::Usage("missing value for --config".to_string()))?;
                 config_entries.push(raw);
                 continue;
             }
@@ -1603,7 +1598,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--config-json" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --config-json".to_string())
+                    LunaError::Usage("missing value for --config-json".to_string())
                 })?;
                 set_string_option_once(&mut config_json, &raw, "--config-json")?;
                 continue;
@@ -1614,7 +1609,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--output-schema-json" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --output-schema-json".to_string())
+                    LunaError::Usage("missing value for --output-schema-json".to_string())
                 })?;
                 set_string_option_once(&mut output_schema_json, &raw, "--output-schema-json")?;
                 continue;
@@ -1625,7 +1620,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--output-schema-file" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --output-schema-file".to_string())
+                    LunaError::Usage("missing value for --output-schema-file".to_string())
                 })?;
                 set_string_option_once(&mut output_schema_file, &raw, "--output-schema-file")?;
                 continue;
@@ -1636,7 +1631,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--output-schema" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --output-schema".to_string())
+                    LunaError::Usage("missing value for --output-schema".to_string())
                 })?;
                 set_string_option_once(&mut output_schema_file, &raw, "--output-schema")?;
                 continue;
@@ -1647,7 +1642,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--turn-extra-json" {
                 let raw = iter.next().ok_or_else(|| {
-                    SparkError::Usage("missing value for --turn-extra-json".to_string())
+                    LunaError::Usage("missing value for --turn-extra-json".to_string())
                 })?;
                 set_string_option_once(&mut turn_extra_json, &raw, "--turn-extra-json")?;
                 continue;
@@ -1658,7 +1653,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--final-response" {
                 if final_response_only {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--final-response may only be provided once".to_string(),
                     ));
                 }
@@ -1667,7 +1662,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--json" {
                 if json_output {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--json may only be provided once".to_string(),
                     ));
                 }
@@ -1680,7 +1675,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             }
             if arg == "--stdio" {
                 if transport_mode == TransportMode::Stdio {
-                    return Err(SparkError::Usage(
+                    return Err(LunaError::Usage(
                         "--stdio may only be provided once".to_string(),
                     ));
                 }
@@ -1688,24 +1683,24 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 continue;
             }
             if arg.starts_with('-') {
-                return Err(SparkError::Usage(format!("unknown option: {arg}")));
+                return Err(LunaError::Usage(format!("unknown option: {arg}")));
             }
         }
 
         match command_kind {
             Some(CommandKind::Exec) => prompt_parts.push(arg),
             Some(CommandKind::Start) => {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "start does not accept prompt arguments".to_string(),
                 ));
             }
             Some(CommandKind::Sessions) => {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "sessions does not accept prompt arguments".to_string(),
                 ));
             }
             None => {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "missing command; expected one of: exec, start, sessions".to_string(),
                 ));
             }
@@ -1713,17 +1708,17 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     }
 
     let command_kind = command_kind.ok_or_else(|| {
-        SparkError::Usage("missing command; expected one of: exec, start, sessions".to_string())
+        LunaError::Usage("missing command; expected one of: exec, start, sessions".to_string())
     })?;
 
     if transport_mode == TransportMode::Stdio && websocket_url.is_some() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "--ws-url cannot be used with --stdio".to_string(),
         ));
     }
 
     if sessions_all && command_kind != CommandKind::Sessions {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "--all can only be used with the sessions command".to_string(),
         ));
     }
@@ -1732,24 +1727,24 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
         CommandKind::Exec => {}
         CommandKind::Sessions => {
             if resume_target.is_some() {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "sessions cannot be used with --continue or --resume".to_string(),
                 ));
             }
             if final_response_only {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "sessions cannot be used with --final-response".to_string(),
                 ));
             }
         }
         CommandKind::Start => {
             if transport_mode == TransportMode::Stdio {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "start cannot be used with --stdio".to_string(),
                 ));
             }
             if no_daemon {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "start cannot be used with --no-daemon".to_string(),
                 ));
             }
@@ -1783,7 +1778,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 || final_response_only
                 || json_output
             {
-                return Err(SparkError::Usage(
+                return Err(LunaError::Usage(
                     "start only supports websocket startup options such as --ws-url".to_string(),
                 ));
             }
@@ -1791,19 +1786,19 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     }
 
     if output_schema_json.is_some() && output_schema_file.is_some() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "only one of --output-schema-json, --output-schema-file, and --output-schema may be provided".to_string(),
         ));
     }
 
     if json_output && final_response_only {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "--json cannot be used with --final-response".to_string(),
         ));
     }
 
     if sessions && json_output {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "sessions cannot be used with --json".to_string(),
         ));
     }
@@ -1847,9 +1842,9 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
     }))
 }
 
-fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), SparkError> {
+fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), LunaError> {
     if slot.is_some() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "--cwd may only be provided once".to_string(),
         ));
     }
@@ -1857,9 +1852,9 @@ fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), Spa
     Ok(())
 }
 
-fn set_command_kind(slot: &mut Option<CommandKind>, value: CommandKind) -> Result<(), SparkError> {
+fn set_command_kind(slot: &mut Option<CommandKind>, value: CommandKind) -> Result<(), LunaError> {
     if slot.is_some() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "only one command may be provided".to_string(),
         ));
     }
@@ -1870,7 +1865,7 @@ fn set_command_kind(slot: &mut Option<CommandKind>, value: CommandKind) -> Resul
 fn resolve_websocket_url(
     explicit: Option<&str>,
     env_websocket_url: Option<&str>,
-) -> Result<String, SparkError> {
+) -> Result<String, LunaError> {
     if let Some(url) = explicit {
         return normalize_websocket_url(url, "--ws-url");
     }
@@ -1880,10 +1875,10 @@ fn resolve_websocket_url(
     Ok(DEFAULT_WS_URL.to_string())
 }
 
-fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, SparkError> {
+fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, LunaError> {
     let value = raw.trim();
     if value.is_empty() {
-        return Err(SparkError::Usage(format!(
+        return Err(LunaError::Usage(format!(
             "value for {source} cannot be empty"
         )));
     }
@@ -1893,9 +1888,9 @@ fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, SparkError
 fn set_resume_target(
     slot: &mut Option<ResumeTarget>,
     target: ResumeTarget,
-) -> Result<(), SparkError> {
+) -> Result<(), LunaError> {
     if slot.is_some() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "only one of --continue and --resume may be provided".to_string(),
         ));
     }
@@ -1903,9 +1898,9 @@ fn set_resume_target(
     Ok(())
 }
 
-fn set_option_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), SparkError> {
+fn set_option_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), LunaError> {
     if slot.is_some() {
-        return Err(SparkError::Usage(format!(
+        return Err(LunaError::Usage(format!(
             "{flag} may only be provided once"
         )));
     }
@@ -1917,17 +1912,17 @@ fn set_string_option_once(
     slot: &mut Option<String>,
     raw: &str,
     flag: &str,
-) -> Result<(), SparkError> {
+) -> Result<(), LunaError> {
     let value = raw.trim();
     if value.is_empty() {
-        return Err(SparkError::Usage(format!(
+        return Err(LunaError::Usage(format!(
             "value for {flag} cannot be empty"
         )));
     }
     set_option_once(slot, value.to_string(), flag)
 }
 
-fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, SparkError> {
+fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, LunaError> {
     match raw.trim() {
         "none" => Ok(ModelReasoningEffort::None),
         "minimal" => Ok(ModelReasoningEffort::Minimal),
@@ -1935,64 +1930,66 @@ fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, SparkError>
         "medium" => Ok(ModelReasoningEffort::Medium),
         "high" => Ok(ModelReasoningEffort::High),
         "xhigh" => Ok(ModelReasoningEffort::XHigh),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --reasoning-effort '{raw}'; expected one of: none, minimal, low, medium, high, xhigh"
+        "max" => Ok(ModelReasoningEffort::Max),
+        "ultra" => Ok(ModelReasoningEffort::Ultra),
+        _ => Err(LunaError::Usage(format!(
+            "invalid --reasoning-effort '{raw}'; expected one of: none, minimal, low, medium, high, xhigh, max, ultra"
         ))),
     }
 }
 
-fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, SparkError> {
+fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, LunaError> {
     match raw.trim() {
         "none" => Ok(ModelReasoningSummary::None),
         "auto" => Ok(ModelReasoningSummary::Auto),
         "concise" => Ok(ModelReasoningSummary::Concise),
         "detailed" => Ok(ModelReasoningSummary::Detailed),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --reasoning-summary '{raw}'; expected one of: none, auto, concise, detailed"
         ))),
     }
 }
 
-fn parse_model_verbosity(raw: &str) -> Result<ModelVerbosity, SparkError> {
+fn parse_model_verbosity(raw: &str) -> Result<ModelVerbosity, LunaError> {
     match raw.trim() {
         "low" => Ok(ModelVerbosity::Low),
         "medium" => Ok(ModelVerbosity::Medium),
         "high" => Ok(ModelVerbosity::High),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --model-verbosity '{raw}'; expected one of: low, medium, high"
         ))),
     }
 }
 
-fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, SparkError> {
+fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, LunaError> {
     match raw.trim() {
         "never" => Ok(ApprovalMode::Never),
         "on-request" => Ok(ApprovalMode::OnRequest),
         "on-failure" => Ok(ApprovalMode::OnFailure),
         "untrusted" => Ok(ApprovalMode::Untrusted),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --approval-policy '{raw}'; expected one of: never, on-request, on-failure, untrusted"
         ))),
     }
 }
 
-fn parse_sandbox_mode(raw: &str) -> Result<SandboxMode, SparkError> {
+fn parse_sandbox_mode(raw: &str) -> Result<SandboxMode, LunaError> {
     match raw.trim() {
         "read-only" => Ok(SandboxMode::ReadOnly),
         "workspace-write" => Ok(SandboxMode::WorkspaceWrite),
         "danger-full-access" => Ok(SandboxMode::DangerFullAccess),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --sandbox '{raw}'; expected one of: read-only, workspace-write, danger-full-access"
         ))),
     }
 }
 
-fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, SparkError> {
+fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, LunaError> {
     match raw.trim() {
         "disabled" => Ok(WebSearchMode::Disabled),
         "cached" => Ok(WebSearchMode::Cached),
         "live" => Ok(WebSearchMode::Live),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --web-search-mode '{raw}'; expected one of: disabled, cached, live"
         ))),
     }
@@ -2006,43 +2003,43 @@ fn web_search_mode_as_str(mode: WebSearchMode) -> &'static str {
     }
 }
 
-fn parse_personality(raw: &str) -> Result<Personality, SparkError> {
+fn parse_personality(raw: &str) -> Result<Personality, LunaError> {
     match raw.trim() {
         "none" => Ok(Personality::None),
         "friendly" => Ok(Personality::Friendly),
         "pragmatic" => Ok(Personality::Pragmatic),
-        _ => Err(SparkError::Usage(format!(
+        _ => Err(LunaError::Usage(format!(
             "invalid --personality '{raw}'; expected one of: none, friendly, pragmatic"
         ))),
     }
 }
 
-fn parse_json_value(raw: &str, flag: &str) -> Result<Value, SparkError> {
+fn parse_json_value(raw: &str, flag: &str) -> Result<Value, LunaError> {
     serde_json::from_str(raw)
-        .map_err(|error| SparkError::Usage(format!("failed to parse JSON for {flag}: {error}")))
+        .map_err(|error| LunaError::Usage(format!("failed to parse JSON for {flag}: {error}")))
 }
 
-fn parse_optional_json_value(raw: Option<String>, flag: &str) -> Result<Option<Value>, SparkError> {
+fn parse_optional_json_value(raw: Option<String>, flag: &str) -> Result<Option<Value>, LunaError> {
     raw.map(|value| parse_json_value(&value, flag)).transpose()
 }
 
 fn parse_optional_json_object(
     raw: Option<String>,
     flag: &str,
-) -> Result<Option<Map<String, Value>>, SparkError> {
+) -> Result<Option<Map<String, Value>>, LunaError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
     let value = parse_json_value(&raw, flag)?;
     match value {
         Value::Object(object) => Ok(Some(object)),
-        _ => Err(SparkError::Usage(format!("{flag} must be a JSON object"))),
+        _ => Err(LunaError::Usage(format!("{flag} must be a JSON object"))),
     }
 }
 
 fn parse_optional_dynamic_tools(
     raw: Option<String>,
-) -> Result<Option<Vec<DynamicToolSpec>>, SparkError> {
+) -> Result<Option<Vec<DynamicToolSpec>>, LunaError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
@@ -2051,7 +2048,7 @@ fn parse_optional_dynamic_tools(
     let array = match parsed {
         Value::Array(array) => array,
         _ => {
-            return Err(SparkError::Usage(
+            return Err(LunaError::Usage(
                 "--dynamic-tools-json must be a JSON array".to_string(),
             ));
         }
@@ -2060,7 +2057,7 @@ fn parse_optional_dynamic_tools(
     let mut tools = Vec::with_capacity(array.len());
     for (index, item) in array.into_iter().enumerate() {
         let spec: CliDynamicToolSpec = serde_json::from_value(item).map_err(|error| {
-            SparkError::Usage(format!(
+            LunaError::Usage(format!(
                 "invalid --dynamic-tools-json entry at index {index}: {error}"
             ))
         })?;
@@ -2082,26 +2079,26 @@ fn build_thread_config(
     model_verbosity: Option<ModelVerbosity>,
     sandbox_network_access_enabled: Option<bool>,
     sandbox_writable_roots: Vec<String>,
-) -> Result<Option<Map<String, Value>>, SparkError> {
+) -> Result<Option<Map<String, Value>>, LunaError> {
     let mut config = parse_optional_json_object(config_json, "--config-json")?.unwrap_or_default();
 
     for entry in config_entries {
         let Some((raw_key, raw_value)) = entry.split_once('=') else {
-            return Err(SparkError::Usage(
+            return Err(LunaError::Usage(
                 "invalid --config entry; expected KEY=VALUE".to_string(),
             ));
         };
 
         let key = raw_key.trim();
         if key.is_empty() {
-            return Err(SparkError::Usage(
+            return Err(LunaError::Usage(
                 "invalid --config entry; key cannot be empty".to_string(),
             ));
         }
 
         let value = raw_value.trim();
         if value.is_empty() {
-            return Err(SparkError::Usage(format!(
+            return Err(LunaError::Usage(format!(
                 "invalid --config entry for key '{key}'; value cannot be empty"
             )));
         }
@@ -2154,7 +2151,7 @@ fn build_thread_config(
 fn resolve_output_schema(
     output_schema_json: Option<String>,
     output_schema_file: Option<String>,
-) -> Result<Option<Value>, SparkError> {
+) -> Result<Option<Value>, LunaError> {
     if let Some(raw) = output_schema_json {
         return Ok(Some(parse_json_value(&raw, "--output-schema-json")?));
     }
@@ -2164,19 +2161,19 @@ fn resolve_output_schema(
     };
     let path = path.trim();
     if path.is_empty() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "value for --output-schema-file cannot be empty".to_string(),
         ));
     }
     let schema_path = PathBuf::from(path);
     let raw = fs::read_to_string(&schema_path).map_err(|error| {
-        SparkError::Config(format!(
+        LunaError::Config(format!(
             "failed to read output schema file {}: {error}",
             schema_path.display()
         ))
     })?;
     let schema = serde_json::from_str::<Value>(&raw).map_err(|error| {
-        SparkError::Usage(format!(
+        LunaError::Usage(format!(
             "failed to parse JSON in output schema file {}: {error}",
             schema_path.display()
         ))
@@ -2184,30 +2181,30 @@ fn resolve_output_schema(
     Ok(Some(schema))
 }
 
-fn normalize_session_id(raw: &str) -> Result<String, SparkError> {
+fn normalize_session_id(raw: &str) -> Result<String, LunaError> {
     let session_id = raw.trim();
     if session_id.is_empty() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "session id for --resume cannot be empty".to_string(),
         ));
     }
     Ok(session_id.to_string())
 }
 
-fn normalize_agent_name(raw: &str) -> Result<String, SparkError> {
+fn normalize_agent_name(raw: &str) -> Result<String, LunaError> {
     let candidate = raw.trim();
     let candidate = candidate.strip_suffix(".toml").unwrap_or(candidate);
     let candidate = candidate.strip_suffix(".md").unwrap_or(candidate);
     if candidate.is_empty() {
-        return Err(SparkError::Usage("agent name cannot be empty".to_string()));
+        return Err(LunaError::Usage("agent name cannot be empty".to_string()));
     }
     if candidate == "." || candidate == ".." {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "agent name cannot be '.' or '..'".to_string(),
         ));
     }
     if candidate.contains('/') || candidate.contains('\\') {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "agent name cannot include path separators".to_string(),
         ));
     }
@@ -2215,36 +2212,36 @@ fn normalize_agent_name(raw: &str) -> Result<String, SparkError> {
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.')
     {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "agent name may only contain [A-Za-z0-9._-]".to_string(),
         ));
     }
     Ok(candidate.to_string())
 }
 
-fn normalize_working_directory(raw: &str) -> Result<String, SparkError> {
+fn normalize_working_directory(raw: &str) -> Result<String, LunaError> {
     if raw.trim().is_empty() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "working directory for --cwd cannot be empty".to_string(),
         ));
     }
     Ok(raw.to_string())
 }
 
-fn resolve_current_working_directory() -> Result<String, SparkError> {
+fn resolve_current_working_directory() -> Result<String, LunaError> {
     let cwd = env::current_dir().map_err(|error| {
-        SparkError::Config(format!("failed to resolve current directory: {error}"))
+        LunaError::Config(format!("failed to resolve current directory: {error}"))
     })?;
     Ok(cwd.to_string_lossy().to_string())
 }
 
-fn resolve_prompt(prompt_parts: Vec<String>) -> Result<String, SparkError> {
+fn resolve_prompt(prompt_parts: Vec<String>) -> Result<String, LunaError> {
     if !prompt_parts.is_empty() {
         return Ok(prompt_parts.join(" "));
     }
 
     if io::stdin().is_terminal() {
-        return Err(SparkError::Usage(
+        return Err(LunaError::Usage(
             "missing prompt; pass text args or pipe stdin".to_string(),
         ));
     }
@@ -2253,14 +2250,14 @@ fn resolve_prompt(prompt_parts: Vec<String>) -> Result<String, SparkError> {
     io::stdin().read_to_string(&mut piped)?;
     let prompt = piped.trim();
     if prompt.is_empty() {
-        return Err(SparkError::Usage("stdin prompt is empty".to_string()));
+        return Err(LunaError::Usage("stdin prompt is empty".to_string()));
     }
     Ok(prompt.to_string())
 }
 
-fn load_agent_profile(agent_name: &str) -> Result<LoadedAgent, SparkError> {
+fn load_agent_profile(agent_name: &str) -> Result<LoadedAgent, LunaError> {
     let codex_home = resolve_codex_home_dir().ok_or_else(|| {
-        SparkError::Config(
+        LunaError::Config(
             "unable to resolve Codex home directory (expected CODEX_HOME, HOME, USERPROFILE, or HOMEDRIVE+HOMEPATH)"
                 .to_string(),
         )
@@ -2296,20 +2293,20 @@ fn resolve_home_dir() -> Option<PathBuf> {
 fn load_agent_profile_from_config(
     agent_name: &str,
     config_path: &Path,
-) -> Result<LoadedAgent, SparkError> {
+) -> Result<LoadedAgent, LunaError> {
     let config_raw = fs::read_to_string(config_path).map_err(|error| {
-        SparkError::Config(format!(
+        LunaError::Config(format!(
             "failed to read Codex config file {}: {error}",
             config_path.display()
         ))
     })?;
     let config: CodexConfigFile =
-        toml::from_str(&config_raw).map_err(|source| SparkError::Toml {
+        toml::from_str(&config_raw).map_err(|source| LunaError::Toml {
             path: config_path.to_path_buf(),
             source,
         })?;
     let role_value = config.agents.get(agent_name).ok_or_else(|| {
-        SparkError::Config(format!(
+        LunaError::Config(format!(
             "agent '{}' was not found in {} under [agents.{}]",
             agent_name,
             config_path.display(),
@@ -2317,7 +2314,7 @@ fn load_agent_profile_from_config(
         ))
     })?;
     let role: AgentRoleConfig = role_value.clone().try_into().map_err(|source| {
-        SparkError::Config(format!(
+        LunaError::Config(format!(
             "invalid [agents.{agent_name}] in {}: {source}",
             config_path.display()
         ))
@@ -2330,14 +2327,14 @@ fn load_agent_profile_from_config(
     {
         let role_config_path = resolve_path_from_file(config_path, config_file);
         let role_config_raw = fs::read_to_string(&role_config_path).map_err(|error| {
-            SparkError::Config(format!(
+            LunaError::Config(format!(
                 "failed to read agent config file for '{}' at {}: {error}",
                 agent_name,
                 role_config_path.display()
             ))
         })?;
         let role_config: AgentConfigLayer =
-            toml::from_str(&role_config_raw).map_err(|source| SparkError::Toml {
+            toml::from_str(&role_config_raw).map_err(|source| LunaError::Toml {
                 path: role_config_path.clone(),
                 source,
             })?;
@@ -2350,7 +2347,7 @@ fn load_agent_profile_from_config(
     {
         description.to_string()
     } else {
-        return Err(SparkError::Config(format!(
+        return Err(LunaError::Config(format!(
             "[agents.{agent_name}] in {} must set config_file or description",
             config_path.display()
         )));
@@ -2364,7 +2361,7 @@ fn resolve_agent_instructions(
     role: &AgentRoleConfig,
     role_config: &AgentConfigLayer,
     role_config_path: &Path,
-) -> Result<String, SparkError> {
+) -> Result<String, LunaError> {
     if let Some(instructions) = role_config
         .developer_instructions
         .as_deref()
@@ -2382,7 +2379,7 @@ fn resolve_agent_instructions(
     {
         let instructions_path = resolve_path_from_file(role_config_path, model_instructions_file);
         let instructions = fs::read_to_string(&instructions_path).map_err(|error| {
-            SparkError::Config(format!(
+            LunaError::Config(format!(
                 "failed to read model_instructions_file for '{}' at {}: {error}",
                 agent_name,
                 instructions_path.display()
@@ -2390,7 +2387,7 @@ fn resolve_agent_instructions(
         })?;
         let trimmed = instructions.trim();
         if trimmed.is_empty() {
-            return Err(SparkError::Config(format!(
+            return Err(LunaError::Config(format!(
                 "model_instructions_file for '{}' at {} is empty",
                 agent_name,
                 instructions_path.display()
@@ -2408,7 +2405,7 @@ fn resolve_agent_instructions(
         return Ok(description.to_string());
     }
 
-    Err(SparkError::Config(format!(
+    Err(LunaError::Config(format!(
         "agent '{}' config {} must set `developer_instructions` or `model_instructions_file`",
         agent_name,
         role_config_path.display()
@@ -2614,6 +2611,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_args_supports_luna_reasoning_efforts() {
+        for (raw, expected) in [
+            ("max", ModelReasoningEffort::Max),
+            ("ultra", ModelReasoningEffort::Ultra),
+        ] {
+            let parsed = parse_cli_args(
+                vec![
+                    "exec".to_string(),
+                    format!("--reasoning-effort={raw}"),
+                    "hello".to_string(),
+                ]
+                .into_iter(),
+            )
+            .expect("parse reasoning effort");
+            let ParsedCommand::Run(cli) = parsed else {
+                panic!("expected run command");
+            };
+
+            assert_eq!(cli.reasoning_effort, Some(expected));
+        }
+    }
+
+    #[test]
     fn parse_cli_args_supports_sessions_command() {
         let parsed =
             parse_cli_args(vec!["sessions".to_string()].into_iter()).expect("parse sessions");
@@ -2674,6 +2694,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_cli_args_supports_x_alias_for_exec() {
+        let parsed = parse_cli_args(
+            vec![
+                "x".to_string(),
+                "--final-response".to_string(),
+                "solve".to_string(),
+                "for".to_string(),
+                "x".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse x alias");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.command_kind, CommandKind::Exec);
+        assert!(cli.final_response_only);
+        assert_eq!(cli.prompt_parts, vec!["solve", "for", "x"]);
+    }
+
+    #[test]
     fn parse_cli_args_supports_start_command_without_prompt() {
         let parsed = parse_cli_args(vec!["start".to_string()].into_iter()).expect("parse start");
         let ParsedCommand::Run(cli) = parsed else {
@@ -2688,7 +2730,7 @@ mod tests {
     fn parse_cli_args_rejects_start_with_stdio() {
         let error = parse_cli_args(vec!["start".to_string(), "--stdio".to_string()].into_iter())
             .expect_err("start should reject stdio");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2696,40 +2738,40 @@ mod tests {
         let error =
             parse_cli_args(vec!["start".to_string(), "--no-daemon".to_string()].into_iter())
                 .expect_err("start should reject no-daemon");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_bare_prompt_without_exec() {
         let error = parse_cli_args(vec!["hello".to_string()].into_iter())
             .expect_err("bare prompt should be rejected");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_start_with_prompt_arguments() {
         let error = parse_cli_args(vec!["start".to_string(), "hello".to_string()].into_iter())
             .expect_err("start should reject prompt args");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_all_without_sessions() {
         let error = parse_cli_args(vec!["--all".to_string(), "hello".to_string()].into_iter())
             .expect_err("--all without sessions");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_sessions_with_prompt() {
         let error = parse_cli_args(vec!["sessions".to_string(), "hello".to_string()].into_iter())
             .expect_err("sessions prompt conflict");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn crop_preview_text_truncates_and_normalizes_whitespace() {
-        let preview = crop_preview_text("hello   world from   spark", 12);
+        let preview = crop_preview_text("hello   world from   luna", 12);
         assert_eq!(preview, "hello world ...");
     }
 
@@ -2890,14 +2932,14 @@ mod tests {
     fn parse_cli_args_rejects_removed_network_access_flag() {
         let error = parse_cli_args(vec!["--network-access-enabled".to_string()].into_iter())
             .expect_err("removed network access flag");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_missing_resume_value() {
         let error = parse_cli_args(vec!["--resume".to_string()].into_iter())
             .expect_err("missing --resume value");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2911,7 +2953,7 @@ mod tests {
             .into_iter(),
         )
         .expect_err("conflicting resume flags");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2924,14 +2966,14 @@ mod tests {
             .into_iter(),
         )
         .expect_err("duplicate final-response");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_duplicate_stdio_flag() {
         let error = parse_cli_args(vec!["--stdio".to_string(), "--stdio".to_string()].into_iter())
             .expect_err("duplicate stdio");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2947,7 +2989,7 @@ mod tests {
             .into_iter(),
         )
         .expect_err("ws-url should conflict with stdio");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2963,21 +3005,21 @@ mod tests {
             .into_iter(),
         )
         .expect_err("output schema source conflict");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_missing_cwd_value() {
         let error =
             parse_cli_args(vec!["--cwd".to_string()].into_iter()).expect_err("missing --cwd value");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_empty_cwd_value() {
         let error =
             parse_cli_args(vec!["--cwd=".to_string()].into_iter()).expect_err("empty --cwd value");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -2991,13 +3033,13 @@ mod tests {
             .into_iter(),
         )
         .expect_err("duplicate cwd");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
     fn parse_cli_args_rejects_unknown_option() {
         let error = parse_cli_args(vec!["--nope".to_string()].into_iter()).expect_err("invalid");
-        assert!(matches!(error, SparkError::Usage(_)));
+        assert!(matches!(error, LunaError::Usage(_)));
     }
 
     #[test]
@@ -3045,7 +3087,7 @@ config_file = \"roles/reviewer.toml\"
         fs::write(
             roles_dir.join("reviewer.toml"),
             "\
-model = \"gpt-5.3-codex\"
+model = \"gpt-5.6-luna\"
 developer_instructions = \"Focus on correctness and tests.\"
 ",
         )
@@ -3139,7 +3181,7 @@ config_file = \"roles/reviewer.toml\"
         .expect("write config");
         fs::write(
             roles_dir.join("reviewer.toml"),
-            "model = \"gpt-5.3-codex\"\n",
+            "model = \"gpt-5.6-luna\"\n",
         )
         .expect("write role config");
 
@@ -3161,7 +3203,7 @@ config_file = \"roles/reviewer.toml\"
 
         let error =
             load_agent_profile_from_config("reviewer", &config_path).expect_err("missing role");
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
         let message = format!("{error}");
         assert!(message.contains("agents.reviewer"));
 
@@ -3176,7 +3218,7 @@ config_file = \"roles/reviewer.toml\"
 
         let error = load_agent_profile_from_config("reviewer", &config_path)
             .expect_err("missing config_file and description");
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
         let message = format!("{error}");
         assert!(message.contains("must set config_file or description"));
 
@@ -3205,7 +3247,7 @@ config_file = \"roles/reviewer.toml\"
 
         let error = load_agent_profile_from_config("reviewer", &config_path)
             .expect_err("missing model instructions file");
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
         let message = format!("{error}");
         assert!(message.contains("failed to read model_instructions_file"));
 
@@ -3250,7 +3292,7 @@ config_file = \"roles/reviewer.toml\"
         })
         .expect_err("expected failure");
 
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
     }
 
     #[test]
@@ -3263,7 +3305,7 @@ config_file = \"roles/reviewer.toml\"
         })
         .expect_err("expected failure");
 
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
     }
 
     #[test]
@@ -3273,7 +3315,7 @@ config_file = \"roles/reviewer.toml\"
         })
         .expect_err("expected failure");
 
-        assert!(matches!(error, SparkError::Config(_)));
+        assert!(matches!(error, LunaError::Config(_)));
     }
 
     #[test]
@@ -3306,8 +3348,7 @@ config_file = \"roles/reviewer.toml\"
             .expect("time")
             .as_nanos();
         let seq = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            env::temp_dir().join(format!("spark-tests-{}-{stamp}-{seq}", std::process::id()));
+        let path = env::temp_dir().join(format!("luna-tests-{}-{stamp}-{seq}", std::process::id()));
         fs::create_dir_all(&path).expect("create temp dir");
         path
     }
