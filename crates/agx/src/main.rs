@@ -682,6 +682,20 @@ fn connect_failure_message(
     )
 }
 
+/// Credentials forwarded to any `codex app-server` daemon the SDK spawns on
+/// our behalf, so a fresh daemon inherits the caller's auth.
+fn daemon_env() -> std::collections::HashMap<String, String> {
+    [
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_ID_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+    ]
+    .iter()
+    .filter_map(|name| env::var(name).ok().map(|value| (name.to_string(), value)))
+    .collect()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -697,7 +711,8 @@ async fn main() -> anyhow::Result<()> {
     let ws_config = match cli.ws_url {
         Some(ref ws_url) => WsConfig::default().with_url(ws_url),
         None => WsConfig::default(),
-    };
+    }
+    .with_env(daemon_env());
     let ws_url = ws_config.url.clone();
 
     if !cli.last_response_only

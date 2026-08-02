@@ -6,10 +6,26 @@ use serde_json::{Map, Value};
 use crate::environment::resolve_codex_binary;
 use crate::error::LunaError;
 
+/// Environment variables forwarded to a daemon the SDK may spawn, so a
+/// freshly started `codex app-server` inherits the caller's credentials.
+const FORWARDED_ENV_VARS: [&str; 4] = [
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ID_TOKEN",
+    "CODEX_ACCESS_TOKEN",
+];
+
+pub(crate) fn daemon_env() -> std::collections::HashMap<String, String> {
+    FORWARDED_ENV_VARS
+        .iter()
+        .filter_map(|name| env::var(name).ok().map(|value| (name.to_string(), value)))
+        .collect()
+}
+
 pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<Codex, LunaError> {
     let config = WsConfig {
         url: url.to_string(),
-        env: Default::default(),
+        env: daemon_env(),
         options: ClientOptions::default(),
     };
     let client = if manage_daemon {
@@ -23,7 +39,7 @@ pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<C
 pub(crate) async fn start_ws_server(url: &str) -> Result<(), LunaError> {
     let config = WsConfig {
         url: url.to_string(),
-        env: Default::default(),
+        env: daemon_env(),
         options: ClientOptions::default(),
     };
     let _client = CodexClient::start_and_connect_ws(config).await?;
