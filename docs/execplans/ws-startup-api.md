@@ -40,6 +40,7 @@ After this change, SDK users can do three distinct things with the websocket tra
   Date/Author: 2026-03-14 / Codex
 
 - Decision: Keep `start_ws` as the daemon-default convenience entry point, with `start_ws_daemon` and `start_ws_blocking` as the explicit forms.
+  - Superseded (0.6.0): `start_ws` was removed as a zero-value alias of `start_ws_daemon`; the explicit forms are the only entry points. See docs/complexity-assessment.md issue 1.3.
   Rationale: This preserves the ergonomic default the user asked for while keeping the high-stakes lifecycle distinction visible in the API surface.
   Date/Author: 2026-03-14 / Codex
 
@@ -49,7 +50,7 @@ After this change, SDK users can do three distinct things with the websocket tra
 
 ## Outcomes & Retrospective
 
-The SDK now exposes explicit websocket startup primitives in addition to the legacy loopback convenience wrapper. Callers can use `connect_ws` for pure connection, `start_ws_daemon` or `start_ws` for detached startup, and `start_ws_blocking` for SDK-owned lifecycle. The new startup config separates `listen_url` from `connect_url`, which makes exposed binds such as `0.0.0.0` explicit instead of overloaded.
+The SDK now exposes explicit websocket startup primitives in addition to the legacy loopback convenience wrapper. Callers can use `connect_ws` for pure connection, `start_ws_daemon` for detached startup, and `start_ws_blocking` for SDK-owned lifecycle. The new startup config separates `listen_url` from `connect_url`, which makes exposed binds such as `0.0.0.0` explicit instead of overloaded.
 
 The most important implementation detail discovered during execution was that blocking-mode lifecycle ownership required process-group shutdown, not just killing the first child PID. Live tests caught that gap before completion. The result now matches the purpose of the change: startup and connection are separated, loopback convenience still exists, and the new behavior is demonstrated by passing websocket integration tests, Spark integration tests, and the full workspace suite.
 
