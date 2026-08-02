@@ -123,6 +123,10 @@ impl<W: Write> HumanOutput<W> {
     }
 
     fn write_fragment(&mut self, fragment: &RenderedItem) -> Result<(), LunaError> {
+        if fragment.kind == RenderedItemKind::UserMessage {
+            return Ok(());
+        }
+
         let identity = (fragment.kind, fragment.item_id.clone());
         let same_streamed_item = fragment.continuation
             && self
@@ -231,6 +235,31 @@ mod tests {
             String::from_utf8(bytes).expect("utf8"),
             "Reasoning: checking files\n\ndone\n"
         );
+    }
+
+    #[test]
+    fn human_output_omits_user_message_echoes() {
+        let mut bytes = Vec::new();
+        let mut output = HumanOutput::new(&mut bytes, Styling::plain());
+        output
+            .write_fragment(&RenderedItem {
+                kind: RenderedItemKind::UserMessage,
+                item_id: Some("u".to_string()),
+                markdown: "**User**\n\ndo not echo this prompt".to_string(),
+                continuation: false,
+            })
+            .expect("user message");
+        output
+            .write_fragment(&RenderedItem {
+                kind: RenderedItemKind::AgentMessage,
+                item_id: Some("a".to_string()),
+                markdown: "answer".to_string(),
+                continuation: true,
+            })
+            .expect("agent message");
+        output.finish().expect("finish");
+
+        assert_eq!(String::from_utf8(bytes).expect("utf8"), "answer\n");
     }
 
     #[test]

@@ -48,6 +48,7 @@ impl RenderedItem {
 /// Renders one complete thread item as concise markdown.
 ///
 /// Every thread item variant produces a fragment, including unknown items.
+/// Items with no displayable content can produce an empty markdown fragment.
 pub fn render_thread_item(item: &ThreadItem) -> RenderedItem {
     match item {
         ThreadItem::AgentMessage(item) => RenderedItem::new(
@@ -329,8 +330,8 @@ impl ThreadEventRenderer {
 }
 
 fn quote_block(label: &str, text: &str) -> String {
-    if text.is_empty() {
-        return format!("> **{label}**");
+    if text.trim().is_empty() {
+        return String::new();
     }
     format!(
         "> **{label}**\n> {}",
@@ -665,6 +666,25 @@ mod tests {
         assert_eq!(fragment.kind, RenderedItemKind::Reasoning);
         assert!(fragment.markdown.contains("summary"));
         assert!(!fragment.continuation);
+    }
+
+    #[test]
+    fn empty_reasoning_items_are_not_rendered() {
+        let mut renderer = ThreadEventRenderer::new();
+
+        for (id, text) in [("empty", ""), ("whitespace", " \n\t")] {
+            let item = ThreadItem::Reasoning(ReasoningItem {
+                id: id.into(),
+                text: text.into(),
+            });
+
+            assert!(render_thread_item(&item).markdown.is_empty());
+            assert!(
+                renderer
+                    .render(&ThreadEvent::ItemCompleted { item })
+                    .is_none()
+            );
+        }
     }
 
     #[test]
