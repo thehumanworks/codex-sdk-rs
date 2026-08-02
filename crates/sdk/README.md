@@ -90,6 +90,21 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+For terminal-agnostic presentation, `ThreadEventRenderer` converts streamed
+events into typed `RenderedItem` markdown fragments. It emits text deltas
+incrementally, suppresses their duplicate completed snapshots, and renders every
+`ThreadItem` variant (including unknown future items) with a visible fallback.
+Applications remain responsible for terminal color and writing:
+
+```rust
+# use codex_app_server_sdk::{ThreadEvent, ThreadEventRenderer};
+# fn render(event: &ThreadEvent) {
+let mut renderer = ThreadEventRenderer::new();
+if let Some(fragment) = renderer.render(event) {
+    println!("{}", fragment.markdown);
+}
+# }
+```
 
 Resume a recorded thread with a typed resume target:
 

@@ -145,6 +145,11 @@ missing-Codex doctor behavior, publishes checksums and a build manifest, and
 creates GitHub provenance attestations.
 
 The parser, help, conflicts, aliases, and completion output share a single `clap`
-definition. Environment, diagnostic, and stable-error contracts are isolated in
-`environment.rs`, `doctor.rs`, and `error.rs` so changes can be tested without a
-live model turn.
+definition in `cli.rs`. Subcommands live under `commands/`; config layering,
+session discovery, websocket resolution, and human/JSON output each have focused
+modules so they can be tested without a live model turn.
+
+Human output includes agent text, reasoning summaries, plans, tool calls,
+commands, patches, status items, and errors. Luna uses `owo-colors` for semantic
+styling and emits no ANSI escapes when stdout is not a terminal or `NO_COLOR` is
+set. `--json` retains the newline-delimited event schema for machine consumers.

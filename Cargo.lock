@@ -641,6 +641,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "codex-app-server-sdk",
+ "owo-colors",
  "serde",
  "serde_json",
  "thiserror",
