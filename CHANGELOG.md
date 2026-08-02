@@ -24,6 +24,25 @@
   field was always `None` and its type contradicted the structured object
   actually sent. Collaboration mode travels via `TurnOptions` /
   `ThreadOptions` (see bug fix below).
+- **`ClientError` gains `Config(String)` and `Startup { message, log_path }`
+  variants** (breaking for exhaustive matches). Invalid URLs/configuration
+  now surface as `Config`; daemon spawn/readiness/port-conflict failures as
+  `Startup`, carrying the daemon log path when one exists. `next_event` on
+  a closed event channel is now `TransportClosed` (was a mislabeled
+  `TransportSend`). The JSON-RPC codes are named:
+  `error::RPC_ERROR_CODE_HANDLER_FAILED` (-32001) and
+  `error::RPC_ERROR_CODE_TRANSPORT_FAILURE` (-32098).
+- **`WsServerHandle::shutdown` is now `async`.** `Drop` is best-effort only
+  (SIGTERM + `try_wait`, no blocking sleeps on the runtime). Process-group
+  termination is unix-only; Windows shutdown is best-effort `child.kill()`.
+- **`WsConfig` no longer has `env`/`with_env`;
+  `start_and_connect_ws(config, env)` takes the daemon environment
+  explicitly** (on `CodexClient` and `Codex`). Previously `WsConfig.env`
+  was silently ignored by `connect_ws` — the field only exists where a
+  process can actually be spawned. `WsStartConfig` keeps its `env`.
+- **`WsServerHandle`/`WsStartMode` moved to `transport::ws_daemon`**
+  (re-exports from `client` and the crate root are preserved, so most
+  imports keep working).
 - **Removed `schema::{serialize_openai_value, deserialize_openai_value}`.**
   They were aliases of `serde_json::{to_value, from_value}`. The trait
   conveniences `to_openai_value` / `from_openai_value` remain.
@@ -58,6 +77,16 @@
 - **Shared transport plumbing.** stdio and websocket transports share one
   reader/writer implementation with named channel capacities; websocket
   text and binary frames go through a single path.
+- **One handshake state machine.** The initialize/ready flags previously
+  tracked in two layers (with an error-swallowing workaround) are now a
+  single state with an idempotent, race-safe `CodexClient::ensure_ready()`.
+- **Daemon lifecycle hardening.** One `WsTarget` URL parse/format path,
+  `spawn_blocking` instead of a hand-rolled launcher thread, startup lock
+  keyed by `(host, port)` so distinct targets don't serialize, and one
+  websocket-handshake liveness probe shared by startup and shutdown.
+- **Item status enums expose `as_str()`** (`CommandExecutionStatus`,
+  `PatchApplyStatus`, `McpToolCallStatus`, `PatchChangeKind`) with
+  canonical wire spellings.
 - **Options builders are generated** from one field table; adding an option
   is now a one-row change. Thread/turn request encoding shares one
   extras inserter over an explicit, unit-tested merge of turn-over-thread
@@ -65,6 +94,9 @@
 
 ## luna 0.3.0 — UNRELEASED
 
+- **Fix:** `--json` output now uses canonical wire casing for command,
+  file-change, and tool-call statuses (`inProgress`, `completed`, …);
+  previously Rust `Debug` names (`InProgress`) leaked into the JSON.
 - Hand-rolled enum parsers and the local `ModelVerbosity` deleted in favor
   of the SDK's `FromStr`/`VARIANTS` (error messages unchanged in shape,
   now generated).

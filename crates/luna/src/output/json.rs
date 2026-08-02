@@ -114,7 +114,7 @@ pub(crate) fn thread_item_to_json(item: &ThreadItem) -> Value {
             "command": command.command,
             "aggregatedOutput": command.aggregated_output,
             "exitCode": command.exit_code,
-            "status": format!("{:?}", command.status),
+            "status": command.status.as_str(),
         }),
         ThreadItem::FileChange(file_change) => {
             let changes: Vec<Value> = file_change
@@ -123,7 +123,7 @@ pub(crate) fn thread_item_to_json(item: &ThreadItem) -> Value {
                 .map(|change| {
                     serde_json::json!({
                         "path": change.path,
-                        "kind": format!("{:?}", change.kind),
+                        "kind": change.kind.as_str(),
                     })
                 })
                 .collect();
@@ -131,7 +131,7 @@ pub(crate) fn thread_item_to_json(item: &ThreadItem) -> Value {
                 "type": "fileChange",
                 "id": file_change.id,
                 "changes": changes,
-                "status": format!("{:?}", file_change.status),
+                "status": file_change.status.as_str(),
             })
         }
         ThreadItem::McpToolCall(tool) => serde_json::json!({
@@ -142,7 +142,7 @@ pub(crate) fn thread_item_to_json(item: &ThreadItem) -> Value {
             "arguments": tool.arguments,
             "result": tool.result,
             "error": tool.error.as_ref().map(|error| &error.message),
-            "status": format!("{:?}", tool.status),
+            "status": tool.status.as_str(),
         }),
         ThreadItem::DynamicToolCall(tool) => serde_json::json!({
             "type": "dynamicToolCall",

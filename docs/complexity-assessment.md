@@ -1,5 +1,33 @@
 # Complexity Assessment & Simplification Backlog
 
+> ## Implementation status addendum (2026-08-02)
+>
+> This backlog has been substantially **implemented** on this branch (SDK
+> 0.6.0, breaking changes taken directly — no deprecation shims; see
+> `CHANGELOG.md`). Status by issue:
+>
+> - **Done:** 0.1, 0.2, 1.1, 1.2, 1.3, 1.5, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6,
+>   2.7, 2.8, 3.8, 4.1, 4.2, 4.3, and the error/env/schema portions of 4.6.
+> - **Superseded by the spark → luna rewrite** (which landed on main during
+>   implementation): 0.3–0.6, 1.4, 3.2, 3.5, 3.6, 3.7 — the spark bugs and
+>   spark-specific refactors. Luna's rewrite independently fixed B3/B4/B5;
+>   B2 (daemon env) and B6 (JSON status casing) were still present in luna
+>   and are fixed on this branch. Luna also uses clap and a modular layout,
+>   covering the intent of 3.2/3.5. The new `crates/luna/src/cli.rs`
+>   (1,624 lines) and `doctor.rs` (718 lines) have NOT been audited — a
+>   fresh assessment pass over luna is recommended.
+> - **Partially superseded:** 3.1/3.3 — the SDK gained `events/render.rs`
+>   (shared renderer) upstream; agx still renders by hand and could adopt
+>   it. A shared `cli-core` crate remains optional now that only two CLIs
+>   (luna, agx) exist with less overlap.
+> - **Remaining open:** 3.4 (derive `Serialize` on `ThreadItem`), 4.4
+>   (serde-derived item parsing), 4.5 (promote extra-only options to typed
+>   protocol fields), 4.7 (agent-config unification, luna-vs-agx flavor),
+>   and the opaque-notification collapse deferred from 4.6.
+>
+> Line references in the original text below are against commit `f3a50a6`
+> and have drifted; the issue intent still governs.
+
 _Assessed at commit `f3a50a6` (workspace v0.5.1). Line references are against that commit._
 
 ## 1. Executive summary — complexity vs. feature scope and user-visible value

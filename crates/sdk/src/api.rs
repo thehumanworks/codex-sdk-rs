@@ -2191,6 +2191,56 @@ fn parse_todo_item(value: &Value) -> Option<TodoItem> {
     })
 }
 
+impl CommandExecutionStatus {
+    /// Canonical wire spelling; `Unknown` renders as `"unknown"`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InProgress => "inProgress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Declined => "declined",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl PatchChangeKind {
+    /// Canonical wire spelling; `Unknown` renders as `"unknown"`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Delete => "delete",
+            Self::Update => "update",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl PatchApplyStatus {
+    /// Canonical wire spelling; `Unknown` renders as `"unknown"`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InProgress => "inProgress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Declined => "declined",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl McpToolCallStatus {
+    /// Canonical wire spelling; `Unknown` renders as `"unknown"`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InProgress => "inProgress",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 fn parse_command_execution_status(status: &str) -> CommandExecutionStatus {
     match status {
         "inProgress" | "in_progress" => CommandExecutionStatus::InProgress,
