@@ -1,7 +1,17 @@
+use std::path::PathBuf;
+
 use crate::protocol::shared::RequestId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+/// JSON-RPC error code sent back to the server when a registered
+/// server-request handler returns an error.
+pub const RPC_ERROR_CODE_HANDLER_FAILED: i64 = -32001;
+
+/// JSON-RPC error code injected into all pending requests when the transport
+/// fails or an inbound frame cannot be processed.
+pub const RPC_ERROR_CODE_TRANSPORT_FAILURE: i64 = -32098;
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -13,6 +23,18 @@ pub enum ClientError {
     AlreadyInitialized,
     #[error("request timed out after {timeout_ms}ms for method {method}")]
     Timeout { method: String, timeout_ms: u64 },
+    /// Invalid URL or otherwise invalid client/transport configuration.
+    #[error("invalid configuration: {0}")]
+    Config(String),
+    /// Failure while starting, reusing, or shutting down a managed
+    /// `codex app-server` process (spawn failure, readiness timeout, reuse
+    /// conflict, port not released). `log_path` points at the daemon log when
+    /// one exists, so startup failures can be debugged.
+    #[error("app-server startup failed: {message}{}", startup_log_suffix(.log_path))]
+    Startup {
+        message: String,
+        log_path: Option<PathBuf>,
+    },
     #[error("transport send failed: {0}")]
     TransportSend(String),
     #[error("transport closed")]
@@ -30,6 +52,13 @@ pub enum ClientError {
         method: String,
         source: serde_json::Error,
     },
+}
+
+fn startup_log_suffix(log_path: &Option<PathBuf>) -> String {
+    match log_path {
+        Some(path) => format!("; logs: {}", path.display()),
+        None => String::new(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

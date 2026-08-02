@@ -1,10 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::CodexClient;
@@ -788,8 +788,6 @@ pub struct Codex {
 struct CodexInner {
     client: CodexClient,
     initialize_params: requests::InitializeParams,
-    initialized: AtomicBool,
-    initialize_lock: Mutex<()>,
 }
 
 impl Codex {
@@ -801,19 +799,12 @@ impl Codex {
             inner: Arc::new(CodexInner {
                 client,
                 initialize_params,
-                initialized: AtomicBool::new(false),
-                initialize_lock: Mutex::new(()),
             }),
         }
     }
 
     pub fn from_client(client: CodexClient) -> Self {
-        let initialize_params = requests::InitializeParams::new(requests::ClientInfo::new(
-            "codex_sdk_rs",
-            "Codex Rust SDK",
-            env!("CARGO_PKG_VERSION"),
-        ));
-        Self::with_initialize_params(client, initialize_params)
+        Self::with_initialize_params(client, crate::client::default_initialize_params())
     }
 
     pub async fn spawn_stdio(config: StdioConfig) -> Result<Self, ClientError> {
@@ -834,8 +825,13 @@ impl Codex {
         CodexClient::start_ws_blocking(config).await
     }
 
-    pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {
-        let client = CodexClient::start_and_connect_ws(config).await?;
+    /// See [`CodexClient::start_and_connect_ws`]: `env` is passed to any
+    /// daemon this call spawns for a managed loopback URL.
+    pub async fn start_and_connect_ws(
+        config: WsConfig,
+        env: HashMap<String, String>,
+    ) -> Result<Self, ClientError> {
+        let client = CodexClient::start_and_connect_ws(config, env).await?;
         Ok(Self::from_client(client))
     }
 
@@ -922,28 +918,10 @@ impl Codex {
     }
 
     async fn ensure_initialized(&self) -> Result<(), ClientError> {
-        if self.inner.initialized.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        let _guard = self.inner.initialize_lock.lock().await;
-        if self.inner.initialized.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        match self
-            .inner
+        self.inner
             .client
-            .initialize(self.inner.initialize_params.clone())
+            .ensure_ready_with(&self.inner.initialize_params)
             .await
-        {
-            Ok(_) | Err(ClientError::AlreadyInitialized) => {}
-            Err(err) => return Err(err),
-        }
-
-        self.inner.client.initialized().await?;
-        self.inner.initialized.store(true, Ordering::SeqCst);
-        Ok(())
     }
 }
 

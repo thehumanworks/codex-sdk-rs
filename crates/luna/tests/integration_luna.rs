@@ -230,7 +230,6 @@ async fn luna_start_command_readies_websocket_daemon() -> Result<(), Box<dyn std
 
     let client = CodexClient::connect_ws(WsConfig {
         url: url.clone(),
-        env: shared_env(),
         options: ClientOptions::default(),
     })
     .await?;

@@ -25,11 +25,10 @@ pub(crate) fn daemon_env() -> std::collections::HashMap<String, String> {
 pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<Codex, LunaError> {
     let config = WsConfig {
         url: url.to_string(),
-        env: daemon_env(),
         options: ClientOptions::default(),
     };
     let client = if manage_daemon {
-        CodexClient::start_and_connect_ws(config).await?
+        CodexClient::start_and_connect_ws(config, daemon_env()).await?
     } else {
         CodexClient::connect_ws(config).await?
     };
@@ -39,10 +38,9 @@ pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<C
 pub(crate) async fn start_ws_server(url: &str) -> Result<(), LunaError> {
     let config = WsConfig {
         url: url.to_string(),
-        env: daemon_env(),
         options: ClientOptions::default(),
     };
-    let _client = CodexClient::start_and_connect_ws(config).await?;
+    let _client = CodexClient::start_and_connect_ws(config, daemon_env()).await?;
     Ok(())
 }
 

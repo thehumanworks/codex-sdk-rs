@@ -711,8 +711,7 @@ async fn main() -> anyhow::Result<()> {
     let ws_config = match cli.ws_url {
         Some(ref ws_url) => WsConfig::default().with_url(ws_url),
         None => WsConfig::default(),
-    }
-    .with_env(daemon_env());
+    };
     let ws_url = ws_config.url.clone();
 
     if !cli.last_response_only
@@ -727,7 +726,7 @@ async fn main() -> anyhow::Result<()> {
             // Fall back to starting a local app-server. The SDK only starts
             // servers for managed (loopback) targets and fails cleanly
             // otherwise, so no loopback detection is needed here.
-            CodexClient::start_and_connect_ws(ws_config)
+            CodexClient::start_and_connect_ws(ws_config, daemon_env())
                 .await
                 .map_err(|start_error| {
                     anyhow::anyhow!(connect_failure_message(

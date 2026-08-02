@@ -47,6 +47,8 @@ impl LunaError {
             Self::Io(_) => "luna.io",
             Self::Client(error) => match error {
                 ClientError::Timeout { .. }
+                | ClientError::Config(_)
+                | ClientError::Startup { .. }
                 | ClientError::TransportSend(_)
                 | ClientError::TransportClosed
                 | ClientError::Io(_) => "luna.transport",

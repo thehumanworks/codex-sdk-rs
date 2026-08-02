@@ -14,7 +14,7 @@ async fn connect_ws_transport_with_connector(
     connector: Option<Connector>,
 ) -> Result<TransportHandle, ClientError> {
     let parsed = Url::parse(url)
-        .map_err(|err| ClientError::TransportSend(format!("invalid websocket URL: {err}")))?;
+        .map_err(|err| ClientError::Config(format!("invalid websocket URL: {err}")))?;
 
     if parsed.scheme() == "wss" {
         ensure_rustls_crypto_provider();

@@ -221,7 +221,7 @@ async fn run_streamed_emits_turn_lifecycle_events() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn codex_client_start_thread_runs_typed_api() -> Result<(), Box<dyn std::error::Error>> {
     let client = CodexClient::spawn_stdio(isolated_stdio_config()).await?;
-    let mut thread = client.start_thread(ThreadOptions::default());
+    let mut thread = client.as_api().start_thread(ThreadOptions::default());
 
     let result = thread
         .run("Reply with exactly: ok", TurnOptions::default())

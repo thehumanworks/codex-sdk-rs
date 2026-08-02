@@ -1,18 +1,25 @@
+//! Managed `codex app-server --listen ws://...` process lifecycle: probing,
+//! starting (daemon or owned/blocking child), readiness, and shutdown.
+//!
+//! All process and port management for websocket servers lives here; the
+//! `client` module only re-exports [`WsServerHandle`] and [`WsStartMode`].
+
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
+use std::net::Ipv4Addr;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
-use std::thread;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use url::{Host, Url};
 
-use crate::client::{WsServerHandle, WsStartConfig, WsStartMode};
+use crate::client::{ClientOptions, WsConfig, WsStartConfig};
 use crate::error::ClientError;
 
 const DAEMON_LOG_DIR_NAME: &str = "codex-app-server-sdk";
@@ -20,14 +27,336 @@ const MAX_DAEMON_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const PROBE_INTERVAL: Duration = Duration::from_millis(150);
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
-const STARTUP_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SHUTDOWN_POLL_ATTEMPTS: u32 = 20;
 
-static STARTUP_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// Per-target startup locks, keyed by the normalized `(host, port)` listen
+/// target so startups against different servers do not serialize each other.
+static STARTUP_LOCKS: OnceLock<StdMutex<HashMap<(String, u16), Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn startup_lock(target: &WsTarget) -> Arc<Mutex<()>> {
+    let locks = STARTUP_LOCKS.get_or_init(Default::default);
+    let mut locks = locks.lock().expect("startup lock map poisoned");
+    locks.entry(target.lock_key()).or_default().clone()
+}
+
+/// A validated `ws://host:port` endpoint: the single parse and single
+/// host-formatting path for everything in this module (listen URLs, log file
+/// names, startup-lock keys).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WsTarget {
+    host: Host<String>,
+    port: u16,
+}
+
+impl WsTarget {
+    /// Parses an explicitly configured websocket URL. Requires the `ws`
+    /// scheme, a host, and an explicit port. `label` names the offending
+    /// config field in error messages (e.g. `listen_url`).
+    fn parse(label: &str, url: &str) -> Result<Self, ClientError> {
+        let parsed = Url::parse(url)
+            .map_err(|err| ClientError::Config(format!("invalid websocket {label}: {err}")))?;
+        if parsed.scheme() != "ws" {
+            return Err(ClientError::Config(format!(
+                "websocket {label} must use the `ws` scheme: `{url}`"
+            )));
+        }
+        let host = parsed
+            .host()
+            .ok_or_else(|| {
+                ClientError::Config(format!(
+                    "invalid websocket {label}: missing host in `{url}`"
+                ))
+            })?
+            .to_owned();
+        let port = parsed.port().ok_or_else(|| {
+            ClientError::Config(format!(
+                "websocket {label} must include explicit port: `{url}`"
+            ))
+        })?;
+        Ok(Self { host, port })
+    }
+
+    fn is_loopback(&self) -> bool {
+        match &self.host {
+            Host::Ipv4(ip) => ip.is_loopback(),
+            Host::Ipv6(ip) => ip.is_loopback(),
+            Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        }
+    }
+
+    /// The host as it appears in a URL authority (IPv6 bracketed).
+    fn host_authority(&self) -> String {
+        match &self.host {
+            Host::Ipv4(ip) => ip.to_string(),
+            Host::Ipv6(ip) => format!("[{ip}]"),
+            Host::Domain(domain) => domain.clone(),
+        }
+    }
+
+    fn url(&self) -> String {
+        format!("ws://{}:{}", self.host_authority(), self.port)
+    }
+
+    /// `localhost` normalized to `127.0.0.1`; every other host unchanged.
+    fn normalized(&self) -> Self {
+        match &self.host {
+            Host::Domain(domain) if domain.eq_ignore_ascii_case("localhost") => Self {
+                host: Host::Ipv4(Ipv4Addr::LOCALHOST),
+                port: self.port,
+            },
+            _ => self.clone(),
+        }
+    }
+
+    /// Log file for a daemon serving this target, derived from the host as
+    /// written (no `localhost` normalization) with non-alphanumeric
+    /// characters replaced by `_`.
+    fn log_path(&self) -> PathBuf {
+        let host_label = match &self.host {
+            Host::Ipv4(ip) => ip.to_string(),
+            Host::Ipv6(ip) => ip.to_string(),
+            Host::Domain(domain) => domain.to_lowercase(),
+        };
+        let safe_host_label: String = host_label
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect();
+
+        daemon_log_dir().join(format!("app-server-{safe_host_label}-{}.log", self.port))
+    }
+
+    fn lock_key(&self) -> (String, u16) {
+        let normalized = self.normalized();
+        (normalized.host_authority().to_lowercase(), normalized.port)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsStartMode {
+    Daemon,
+    Blocking,
+}
+
+#[derive(Debug)]
+pub struct WsServerHandle {
+    listen_url: String,
+    connect_url: String,
+    mode: WsStartMode,
+    reused_existing: bool,
+    log_path: Option<PathBuf>,
+    process_group_id: Option<u32>,
+    child: Option<Child>,
+}
+
+impl WsServerHandle {
+    pub fn listen_url(&self) -> &str {
+        &self.listen_url
+    }
+
+    pub fn connect_url(&self) -> &str {
+        &self.connect_url
+    }
+
+    pub fn mode(&self) -> WsStartMode {
+        self.mode
+    }
+
+    pub fn reused_existing(&self) -> bool {
+        self.reused_existing
+    }
+
+    pub fn started_new_process(&self) -> bool {
+        !self.reused_existing
+    }
+
+    pub fn owns_process(&self) -> bool {
+        self.child.is_some()
+    }
+
+    pub fn log_path(&self) -> Option<&Path> {
+        self.log_path.as_deref()
+    }
+
+    pub fn connect_config(&self, options: ClientOptions) -> WsConfig {
+        WsConfig::new(self.connect_url.clone(), options)
+    }
+
+    /// Terminates an owned server process and waits (async) until the server
+    /// no longer answers websocket handshakes on the connect URL.
+    ///
+    /// Process-group termination (SIGTERM, escalating to SIGKILL) is
+    /// unix-only. On Windows shutdown is best-effort `child.kill()` of the
+    /// direct child; grandchildren are not terminated.
+    pub async fn shutdown(&mut self) -> Result<(), ClientError> {
+        let process_group_id = self.process_group_id.take();
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+
+        if let Some(process_group_id) = process_group_id {
+            let _ = terminate_process_group(process_group_id);
+        }
+        #[cfg(not(unix))]
+        let _ = child.kill();
+
+        let mut child_exited = false;
+        for attempt in 0..SHUTDOWN_POLL_ATTEMPTS {
+            if !child_exited && child.try_wait()?.is_some() {
+                child_exited = true;
+            }
+            if child_exited && self.connect_target_released().await {
+                return Ok(());
+            }
+            if attempt == 5
+                && let Some(process_group_id) = process_group_id
+            {
+                let _ = terminate_process_group(process_group_id);
+            }
+            tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
+        }
+
+        if let Some(process_group_id) = process_group_id {
+            let _ = kill_process_group(process_group_id);
+        }
+        if !child_exited {
+            let _ = child.kill();
+            let _ = child.wait()?;
+        }
+
+        for _ in 0..SHUTDOWN_POLL_ATTEMPTS {
+            if self.connect_target_released().await {
+                return Ok(());
+            }
+            tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
+        }
+
+        Err(ClientError::Startup {
+            message: format!(
+                "websocket app-server did not release `{}` during shutdown",
+                self.connect_url
+            ),
+            log_path: self.log_path.clone(),
+        })
+    }
+
+    /// True once nothing answers a websocket handshake on the connect URL —
+    /// the same liveness predicate used by startup ([`probe_app_server`]).
+    /// A probe protocol error means something other than our server answered,
+    /// so the target counts as released.
+    async fn connect_target_released(&self) -> bool {
+        !matches!(
+            probe_app_server(&self.connect_url).await,
+            Ok(ProbeState::Reachable)
+        )
+    }
+
+    pub(crate) fn from_reused_existing(
+        listen_url: String,
+        connect_url: String,
+        mode: WsStartMode,
+        log_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            listen_url,
+            connect_url,
+            mode,
+            reused_existing: true,
+            log_path,
+            process_group_id: None,
+            child: None,
+        }
+    }
+
+    pub(crate) fn daemon_started(
+        listen_url: String,
+        connect_url: String,
+        log_path: PathBuf,
+    ) -> Self {
+        Self {
+            listen_url,
+            connect_url,
+            mode: WsStartMode::Daemon,
+            reused_existing: false,
+            log_path: Some(log_path),
+            process_group_id: None,
+            child: None,
+        }
+    }
+
+    pub(crate) fn blocking_started(listen_url: String, connect_url: String, child: Child) -> Self {
+        let process_group_id = Some(child.id());
+        Self {
+            listen_url,
+            connect_url,
+            mode: WsStartMode::Blocking,
+            reused_existing: false,
+            log_path: None,
+            process_group_id,
+            child: Some(child),
+        }
+    }
+}
+
+impl Drop for WsServerHandle {
+    /// Best-effort only: SIGTERM the process group (unix) / kill the child
+    /// (elsewhere) and reap it if it has already exited. Never sleeps or
+    /// waits — call [`WsServerHandle::shutdown`] for a confirmed shutdown.
+    fn drop(&mut self) {
+        if let Some(process_group_id) = self.process_group_id.take() {
+            let _ = terminate_process_group(process_group_id);
+        }
+        if let Some(mut child) = self.child.take() {
+            #[cfg(not(unix))]
+            let _ = child.kill();
+            let _ = child.try_wait();
+        }
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(unix)]
+fn signal_process_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
+    let process_group_id = i32::try_from(process_group_id)
+        .map_err(|_| std::io::Error::other("process group id is too large"))?;
+    let result = unsafe { kill(-process_group_id, signal) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_group(process_group_id: u32) -> std::io::Result<()> {
+    signal_process_group(process_group_id, 15)
+}
+
+#[cfg(unix)]
+fn kill_process_group(process_group_id: u32) -> std::io::Result<()> {
+    signal_process_group(process_group_id, 9)
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(_process_group_id: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_process_group_id: u32) -> std::io::Result<()> {
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 struct WsStartTarget {
     connect_url: String,
     listen_url: String,
+    /// Parsed listen endpoint (startup-lock key).
+    listen: WsTarget,
     log_path: PathBuf,
 }
 
@@ -39,7 +368,7 @@ enum ProbeState {
 
 pub async fn ensure_local_ws_app_server(
     url: &str,
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> Result<(), ClientError> {
     let Some(target) = parse_managed_ws_target(url)? else {
         return Ok(());
@@ -57,13 +386,9 @@ pub async fn start_ws_server(
     start_ws_server_internal(target, &config.env, config.reuse_existing, mode).await
 }
 
-fn startup_lock() -> &'static Mutex<()> {
-    STARTUP_LOCK.get_or_init(|| Mutex::new(()))
-}
-
 async fn start_ws_server_internal(
     target: WsStartTarget,
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
     reuse_existing: bool,
     mode: WsStartMode,
 ) -> Result<WsServerHandle, ClientError> {
@@ -71,7 +396,8 @@ async fn start_ws_server_internal(
         return Ok(handle);
     }
 
-    let _guard = startup_lock().lock().await;
+    let lock = startup_lock(&target.listen);
+    let _guard = lock.lock().await;
 
     if let Some(handle) = existing_server_handle(&target, reuse_existing, mode).await? {
         return Ok(handle);
@@ -79,7 +405,7 @@ async fn start_ws_server_internal(
 
     match mode {
         WsStartMode::Daemon => {
-            spawn_daemon_launcher_thread(&target, env)?;
+            spawn_daemon(&target, env).await?;
             wait_for_ready(&target, None).await?;
             Ok(WsServerHandle::daemon_started(
                 target.listen_url,
@@ -114,123 +440,76 @@ async fn existing_server_handle(
                     Some(target.log_path.clone()),
                 )))
             } else {
-                Err(ClientError::TransportSend(format!(
-                    "websocket app-server already running at `{}` and reuse_existing is disabled",
-                    target.connect_url
-                )))
+                Err(ClientError::Startup {
+                    message: format!(
+                        "websocket app-server already running at `{}` and reuse_existing is disabled",
+                        target.connect_url
+                    ),
+                    log_path: Some(target.log_path.clone()),
+                })
             }
         }
         Ok(ProbeState::Unavailable) => Ok(None),
-        Err(err) => Err(conflict_error(&target.connect_url, err)),
+        Err(probe_failure) => Err(ClientError::Startup {
+            message: format!(
+                "websocket startup conflict at `{}`: {probe_failure}",
+                target.connect_url
+            ),
+            log_path: Some(target.log_path.clone()),
+        }),
     }
 }
 
+/// Classifies `url` for `start_and_connect_ws`: `Some(target)` when the URL
+/// is a loopback `ws://` endpoint the SDK manages (may auto-start a daemon),
+/// `None` when it is connect-only (`wss://`, non-loopback), and an error when
+/// it cannot be a managed target at all (unparseable, missing host/port).
 fn parse_managed_ws_target(url: &str) -> Result<Option<WsStartTarget>, ClientError> {
     let parsed = Url::parse(url)
-        .map_err(|err| ClientError::TransportSend(format!("invalid websocket URL: {err}")))?;
+        .map_err(|err| ClientError::Config(format!("invalid websocket URL: {err}")))?;
 
     if parsed.scheme() != "ws" {
         return Ok(None);
     }
 
-    let host = parsed.host().ok_or_else(|| {
-        ClientError::TransportSend(format!("invalid websocket URL: missing host in `{url}`"))
-    })?;
+    let host = parsed
+        .host()
+        .ok_or_else(|| {
+            ClientError::Config(format!("invalid websocket URL: missing host in `{url}`"))
+        })?
+        .to_owned();
 
-    if !is_loopback_host(&host) {
+    let mut connect = WsTarget { host, port: 0 };
+    if !connect.is_loopback() {
         return Ok(None);
     }
 
-    let port = parsed.port().ok_or_else(|| {
-        ClientError::TransportSend(format!(
+    connect.port = parsed.port().ok_or_else(|| {
+        ClientError::Config(format!(
             "loopback websocket URL must include explicit port: `{url}`"
         ))
     })?;
 
-    let listen_host = normalized_listen_host(&host);
-    let listen_url = format!("ws://{listen_host}:{port}");
-    let log_path = log_path_for(&host, port);
+    let listen = connect.normalized();
 
     Ok(Some(WsStartTarget {
         connect_url: url.to_string(),
-        listen_url,
-        log_path,
+        listen_url: listen.url(),
+        log_path: connect.log_path(),
+        listen,
     }))
 }
 
 fn build_start_target(config: &WsStartConfig) -> Result<WsStartTarget, ClientError> {
-    let listen = parse_ws_url("listen_url", &config.listen_url)?;
-    parse_ws_url("connect_url", &config.connect_url)?;
-    let listen_host = listen.host().ok_or_else(|| {
-        ClientError::TransportSend(format!(
-            "invalid websocket listen_url: missing host in `{}`",
-            config.listen_url
-        ))
-    })?;
-    let listen_port = listen.port().ok_or_else(|| {
-        ClientError::TransportSend(format!(
-            "websocket listen_url must include explicit port: `{}`",
-            config.listen_url
-        ))
-    })?;
+    let listen = WsTarget::parse("listen_url", &config.listen_url)?;
+    WsTarget::parse("connect_url", &config.connect_url)?;
 
     Ok(WsStartTarget {
         listen_url: config.listen_url.clone(),
         connect_url: config.connect_url.clone(),
-        log_path: log_path_for(&listen_host, listen_port),
+        log_path: listen.log_path(),
+        listen,
     })
-}
-
-fn parse_ws_url(label: &str, url: &str) -> Result<Url, ClientError> {
-    let parsed = Url::parse(url)
-        .map_err(|err| ClientError::TransportSend(format!("invalid websocket {label}: {err}")))?;
-    if parsed.scheme() != "ws" {
-        return Err(ClientError::TransportSend(format!(
-            "websocket {label} must use the `ws` scheme: `{url}`"
-        )));
-    }
-    if parsed.host().is_none() {
-        return Err(ClientError::TransportSend(format!(
-            "invalid websocket {label}: missing host in `{url}`"
-        )));
-    }
-    if parsed.port().is_none() {
-        return Err(ClientError::TransportSend(format!(
-            "websocket {label} must include explicit port: `{url}`"
-        )));
-    }
-    Ok(parsed)
-}
-
-fn is_loopback_host(host: &Host<&str>) -> bool {
-    match host {
-        Host::Ipv4(ip) => ip.is_loopback(),
-        Host::Ipv6(ip) => ip.is_loopback(),
-        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
-    }
-}
-
-fn normalized_listen_host(host: &Host<&str>) -> String {
-    match host {
-        Host::Ipv4(ip) => ip.to_string(),
-        Host::Ipv6(ip) => format!("[{ip}]"),
-        Host::Domain(domain) if domain.eq_ignore_ascii_case("localhost") => "127.0.0.1".to_string(),
-        Host::Domain(domain) => domain.to_string(),
-    }
-}
-
-fn log_path_for(host: &Host<&str>, port: u16) -> PathBuf {
-    let host_label = match host {
-        Host::Ipv4(ip) => ip.to_string(),
-        Host::Ipv6(ip) => ip.to_string(),
-        Host::Domain(domain) => domain.to_lowercase(),
-    };
-    let safe_host_label: String = host_label
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect();
-
-    daemon_log_dir().join(format!("app-server-{safe_host_label}-{port}.log"))
 }
 
 fn daemon_log_dir() -> PathBuf {
@@ -291,7 +570,12 @@ fn open_daemon_log(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-async fn probe_app_server(url: &str) -> Result<ProbeState, ClientError> {
+/// The single liveness predicate for websocket app-servers: attempts a real
+/// websocket handshake. `Ok(Reachable)` when a server accepted the handshake,
+/// `Ok(Unavailable)` when nothing (or nothing yet) is listening, and
+/// `Err(description)` when the port is occupied by something that is not a
+/// websocket app-server.
+async fn probe_app_server(url: &str) -> Result<ProbeState, String> {
     let connect = tokio_tungstenite::connect_async(url);
     match tokio::time::timeout(PROBE_TIMEOUT, connect).await {
         Ok(Ok((mut stream, _))) => {
@@ -303,19 +587,17 @@ async fn probe_app_server(url: &str) -> Result<ProbeState, ClientError> {
     }
 }
 
-fn classify_probe_error(url: &str, err: WsError) -> Result<ProbeState, ClientError> {
+fn classify_probe_error(url: &str, err: WsError) -> Result<ProbeState, String> {
     match err {
         WsError::Io(io_err) if is_retryable_connect_error(io_err.kind()) => {
             Ok(ProbeState::Unavailable)
         }
         WsError::ConnectionClosed | WsError::AlreadyClosed => Ok(ProbeState::Unavailable),
-        WsError::Http(response) => Err(ClientError::TransportSend(format!(
+        WsError::Http(response) => Err(format!(
             "websocket probe failed for `{url}`: unexpected HTTP status {}",
             response.status()
-        ))),
-        other => Err(ClientError::TransportSend(format!(
-            "websocket probe failed for `{url}`: {other}"
-        ))),
+        )),
+        other => Err(format!("websocket probe failed for `{url}`: {other}")),
     }
 }
 
@@ -332,38 +614,38 @@ fn is_retryable_connect_error(kind: ErrorKind) -> bool {
     )
 }
 
-fn spawn_daemon_launcher_thread(
+/// Spawns the detached daemon via `spawn_blocking` (the spawn itself does
+/// blocking filesystem work). Uses `std::process::Command`, not
+/// `tokio::process`, deliberately: the daemon must outlive us and must not be
+/// reaped by the runtime.
+async fn spawn_daemon(
     target: &WsStartTarget,
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> Result<(), ClientError> {
-    let target_for_thread = target.clone();
-    let target_for_error = target.clone();
-    let env_for_thread = env.clone();
-    let (tx, rx) = std::sync::mpsc::channel::<Result<(), std::io::Error>>();
+    let target_for_task = target.clone();
+    let env_for_task = env.clone();
+    let spawn_result =
+        tokio::task::spawn_blocking(move || spawn_daemon_process(&target_for_task, &env_for_task))
+            .await;
 
-    thread::spawn(move || {
-        let result = spawn_daemon_process(&target_for_thread, &env_for_thread);
-        let _ = tx.send(result);
-    });
+    let startup_error = |detail: String| ClientError::Startup {
+        message: format!(
+            "failed to start websocket app-server daemon for `{}`: {detail}",
+            target.connect_url
+        ),
+        log_path: Some(target.log_path.clone()),
+    };
 
-    match rx.recv_timeout(STARTUP_ACK_TIMEOUT) {
+    match spawn_result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(err)) => Err(ClientError::TransportSend(format!(
-            "failed to start websocket app-server daemon for `{}`: {err}; logs: {}",
-            target_for_error.connect_url,
-            target_for_error.log_path.display()
-        ))),
-        Err(err) => Err(ClientError::TransportSend(format!(
-            "failed to confirm websocket app-server daemon startup for `{}`: {err}; logs: {}",
-            target_for_error.connect_url,
-            target_for_error.log_path.display()
-        ))),
+        Ok(Err(err)) => Err(startup_error(err.to_string())),
+        Err(join_error) => Err(startup_error(join_error.to_string())),
     }
 }
 
 fn spawn_daemon_process(
     target: &WsStartTarget,
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> std::io::Result<()> {
     #[cfg(windows)]
     {
@@ -402,7 +684,7 @@ fn spawn_daemon_process(
 
 fn spawn_owned_process(
     target: &WsStartTarget,
-    env: &std::collections::HashMap<String, String>,
+    env: &HashMap<String, String>,
 ) -> std::io::Result<Child> {
     let mut command = Command::new(codex_binary(env));
     #[cfg(unix)]
@@ -422,7 +704,7 @@ fn spawn_owned_process(
     command.spawn()
 }
 
-fn codex_binary(env: &std::collections::HashMap<String, String>) -> String {
+fn codex_binary(env: &HashMap<String, String>) -> String {
     env.get("CODEX_BINARY")
         .filter(|value| !value.is_empty())
         .cloned()
@@ -444,42 +726,40 @@ async fn wait_for_ready(
         if let Some(child) = child.as_deref_mut()
             && let Some(status) = child.try_wait()?
         {
-            return Err(ClientError::TransportSend(format!(
-                "websocket app-server for `{}` exited before becoming ready with status {status}",
-                target.connect_url
-            )));
+            return Err(ClientError::Startup {
+                message: format!(
+                    "websocket app-server for `{}` exited before becoming ready with status {status}",
+                    target.connect_url
+                ),
+                log_path: None,
+            });
         }
 
         match probe_app_server(&target.connect_url).await {
             Ok(ProbeState::Reachable) => return Ok(()),
             Ok(ProbeState::Unavailable) => {}
-            Err(err) => {
-                return Err(ClientError::TransportSend(format!(
-                    "websocket app-server readiness probe failed for `{}`: {err}; logs: {}",
-                    target.connect_url,
-                    target.log_path.display()
-                )));
+            Err(probe_failure) => {
+                return Err(ClientError::Startup {
+                    message: format!(
+                        "websocket app-server readiness probe failed for `{}`: {probe_failure}",
+                        target.connect_url
+                    ),
+                    log_path: Some(target.log_path.clone()),
+                });
             }
         }
 
         if Instant::now() >= deadline {
-            return Err(ClientError::TransportSend(format!(
-                "timed out waiting for websocket app-server at `{}`; logs: {}",
-                target.connect_url,
-                target.log_path.display()
-            )));
+            return Err(ClientError::Startup {
+                message: format!(
+                    "timed out waiting for websocket app-server at `{}`",
+                    target.connect_url
+                ),
+                log_path: Some(target.log_path.clone()),
+            });
         }
 
         tokio::time::sleep(PROBE_INTERVAL).await;
-    }
-}
-
-fn conflict_error(connect_url: &str, err: ClientError) -> ClientError {
-    match err {
-        ClientError::TransportSend(message) => ClientError::TransportSend(format!(
-            "websocket startup conflict at `{connect_url}`: {message}"
-        )),
-        other => other,
     }
 }
 
@@ -531,26 +811,16 @@ mod tests {
     fn invalid_and_missing_port_urls_are_rejected() {
         let missing_port =
             parse_managed_ws_target("ws://127.0.0.1").expect_err("missing port should be rejected");
-        match missing_port {
-            ClientError::TransportSend(message) => {
-                assert!(
-                    message.contains("explicit port"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other}"),
-        }
+        assert!(
+            matches!(&missing_port, ClientError::Config(message) if message.contains("explicit port")),
+            "unexpected error: {missing_port:?}"
+        );
 
         let invalid = parse_managed_ws_target("not-a-url").expect_err("invalid URL should fail");
-        match invalid {
-            ClientError::TransportSend(message) => {
-                assert!(
-                    message.contains("invalid websocket URL"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("unexpected error variant: {other}"),
-        }
+        assert!(
+            matches!(&invalid, ClientError::Config(message) if message.contains("invalid websocket URL")),
+            "unexpected error: {invalid:?}"
+        );
     }
 
     #[test]
@@ -558,7 +828,7 @@ mod tests {
         let target = build_start_target(&WsStartConfig::new(
             "ws://0.0.0.0:4222",
             "ws://127.0.0.1:4222",
-            std::collections::HashMap::new(),
+            HashMap::new(),
         ))
         .expect("config should be valid");
 
@@ -573,8 +843,55 @@ mod tests {
     }
 
     #[test]
+    fn ws_target_parse_rejects_bad_urls_with_config_errors() {
+        let bad_scheme = WsTarget::parse("listen_url", "wss://127.0.0.1:4222")
+            .expect_err("wss should be rejected for listen_url");
+        assert!(
+            matches!(&bad_scheme, ClientError::Config(message) if message.contains("`ws` scheme")),
+            "unexpected error: {bad_scheme:?}"
+        );
+
+        let missing_port = WsTarget::parse("connect_url", "ws://127.0.0.1")
+            .expect_err("missing port should be rejected");
+        assert!(
+            matches!(&missing_port, ClientError::Config(message) if message.contains("explicit port")),
+            "unexpected error: {missing_port:?}"
+        );
+    }
+
+    #[test]
+    fn ws_target_formats_ipv6_and_derives_log_paths() {
+        let target = WsTarget::parse("listen_url", "ws://[::1]:4222").expect("valid IPv6 url");
+        assert_eq!(target.url(), "ws://[::1]:4222");
+        assert_eq!(
+            target.log_path(),
+            std::env::temp_dir()
+                .join("codex-app-server-sdk")
+                .join("app-server-__1-4222.log")
+        );
+    }
+
+    #[test]
+    fn startup_locks_are_keyed_by_normalized_host_and_port() {
+        let localhost = WsTarget::parse("connect_url", "ws://localhost:49222").expect("valid url");
+        let loopback = WsTarget::parse("connect_url", "ws://127.0.0.1:49222").expect("valid url");
+        let other_port = WsTarget::parse("connect_url", "ws://127.0.0.1:49223").expect("valid url");
+
+        assert_eq!(localhost.lock_key(), loopback.lock_key());
+        assert_ne!(localhost.lock_key(), other_port.lock_key());
+        assert!(Arc::ptr_eq(
+            &startup_lock(&localhost),
+            &startup_lock(&loopback)
+        ));
+        assert!(!Arc::ptr_eq(
+            &startup_lock(&localhost),
+            &startup_lock(&other_port)
+        ));
+    }
+
+    #[test]
     fn codex_binary_prefers_explicit_environment_map() {
-        let env = std::collections::HashMap::from([(
+        let env = HashMap::from([(
             "CODEX_BINARY".to_string(),
             "/opt/codex/bin/codex".to_string(),
         )]);

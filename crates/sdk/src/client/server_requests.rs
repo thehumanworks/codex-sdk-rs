@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 
 use super::{CodexClient, Inner};
-use crate::error::ClientError;
+use crate::error::{ClientError, RPC_ERROR_CODE_HANDLER_FAILED};
 use crate::events::{ServerEvent, ServerRequestEvent, server_request_table};
 use crate::protocol::server_requests as sr;
 use crate::protocol::shared::RequestId;
@@ -110,7 +110,7 @@ async fn send_server_request_handler_result<R: Serialize>(
         Err(err) => json!({
             "id": id,
             "error": {
-                "code": -32001,
+                "code": RPC_ERROR_CODE_HANDLER_FAILED,
                 "message": format!("{context} handler failed: {err}")
             }
         }),

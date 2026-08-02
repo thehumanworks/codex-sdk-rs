@@ -65,7 +65,6 @@ fn isolated_ws_env() -> HashMap<String, String> {
 fn ws_client_config(url: &str) -> WsConfig {
     WsConfig {
         url: url.to_string(),
-        env: isolated_ws_env(),
         options: ClientOptions::default(),
     }
 }
@@ -93,7 +92,8 @@ async fn initialize_client(client: &CodexClient) -> Result<(), Box<dyn std::erro
 async fn connect_initialized_ws_client(
     url: &str,
 ) -> Result<CodexClient, Box<dyn std::error::Error>> {
-    let client = CodexClient::start_and_connect_ws(ws_client_config(url)).await?;
+    let client =
+        CodexClient::start_and_connect_ws(ws_client_config(url), isolated_ws_env()).await?;
     initialize_client(&client).await?;
 
     Ok(client)
@@ -120,7 +120,7 @@ async fn ws_client_start_thread_runs_and_streams() -> Result<(), Box<dyn std::er
     let url = reserve_local_ws_url()?;
     let client = connect_initialized_ws_client(&url).await?;
 
-    let mut thread = client.start_thread(ThreadOptions::default());
+    let mut thread = client.as_api().start_thread(ThreadOptions::default());
     let turn = thread
         .run("Reply with exactly: ok", TurnOptions::default())
         .await?;
@@ -166,7 +166,6 @@ async fn test_connect_ws_does_not_start_daemon() {
     let url = "ws://127.0.0.1:4234"; // Random unused port
     let config = WsConfig {
         url: url.to_string(),
-        env: HashMap::new(),
         options: ClientOptions::default(),
     };
     let result = CodexClient::connect_ws(config).await;
@@ -210,7 +209,7 @@ async fn start_ws_blocking_returns_owned_handle_and_can_shutdown()
     initialize_client(&client).await?;
     drop(client);
 
-    server.shutdown()?;
+    server.shutdown().await?;
     let port = url::Url::parse(&url)?
         .port()
         .ok_or("url should include port")?;
@@ -241,7 +240,7 @@ async fn start_ws_daemon_errors_when_reuse_existing_is_disabled()
         CodexClient::start_ws_daemon(ws_start_config(&url, &url).with_reuse_existing(false)).await;
 
     match result {
-        Err(codex_app_server_sdk::ClientError::TransportSend(message)) => {
+        Err(codex_app_server_sdk::ClientError::Startup { message, .. }) => {
             assert!(
                 message.contains("reuse_existing is disabled"),
                 "unexpected message: {message}"
@@ -273,15 +272,13 @@ async fn start_ws_daemon_fails_when_port_is_occupied_by_non_websocket_service()
     let result = CodexClient::start_ws_daemon(ws_start_config(&url, &url)).await;
     server_task.await?;
 
-    match result {
-        Err(codex_app_server_sdk::ClientError::TransportSend(message)) => {
-            assert!(
-                message.contains("websocket startup conflict"),
-                "unexpected message: {message}"
-            );
-        }
-        other => panic!("expected startup conflict, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            &result,
+            Err(codex_app_server_sdk::ClientError::Startup { .. })
+        ),
+        "expected startup conflict, got {result:?}"
+    );
 
     Ok(())
 }

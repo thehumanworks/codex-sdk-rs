@@ -1,11 +1,8 @@
 mod server_requests;
 
 use std::collections::HashMap;
-use std::net::TcpListener;
-use std::path::{Path, PathBuf};
-use std::process::Child;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -13,7 +10,9 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
 
 use crate::api::Codex;
-use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
+use crate::error::{
+    ClientError, IncomingClassified, RPC_ERROR_CODE_TRANSPORT_FAILURE, RpcError, classify_incoming,
+};
 use crate::events::{
     ServerEvent, ServerNotification, ServerRequestEvent, parse_notification, parse_server_request,
 };
@@ -26,7 +25,24 @@ use crate::transport::stdio::spawn_stdio_transport;
 use crate::transport::ws::connect_ws_transport;
 use crate::transport::ws_daemon::{ensure_local_ws_app_server, start_ws_server};
 
+pub use crate::transport::ws_daemon::{WsServerHandle, WsStartMode};
+
 type PendingMap = HashMap<RequestId, oneshot::Sender<Result<Value, RpcError>>>;
+
+/// Wire method name of the `initialize` handshake request — the only request
+/// allowed before the connection is ready.
+pub(crate) const METHOD_INITIALIZE: &str = "initialize";
+/// Wire method name of the `initialized` handshake notification — the only
+/// notification allowed before the connection is ready.
+pub(crate) const METHOD_INITIALIZED: &str = "initialized";
+
+/// Handshake state machine (stored in an `AtomicU8`): monotonically advances
+/// `New -> Initializing -> Initialized -> Ready`, except that a failed
+/// `initialize` inside [`CodexClient::ensure_ready`] resets to `New`.
+const HANDSHAKE_NEW: u8 = 0;
+const HANDSHAKE_INITIALIZING: u8 = 1;
+const HANDSHAKE_INITIALIZED: u8 = 2;
+const HANDSHAKE_READY: u8 = 3;
 
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
@@ -60,22 +76,22 @@ impl Default for StdioConfig {
     }
 }
 
+/// Where and how to connect to a websocket app-server.
+///
+/// Environment variables for a daemon the SDK may spawn are *not* part of
+/// this config: pass them to [`CodexClient::start_and_connect_ws`] (or use
+/// [`WsStartConfig`] with the explicit start APIs), since a plain
+/// [`CodexClient::connect_ws`] never spawns anything.
 #[derive(Debug, Clone)]
 pub struct WsConfig {
     pub url: String,
-    pub env: HashMap<String, String>,
     pub options: ClientOptions,
 }
 
 impl WsConfig {
-    pub fn new(
-        url: impl Into<String>,
-        env: HashMap<String, String>,
-        options: ClientOptions,
-    ) -> Self {
+    pub fn new(url: impl Into<String>, options: ClientOptions) -> Self {
         Self {
             url: url.into(),
-            env,
             options,
         }
     }
@@ -84,18 +100,12 @@ impl WsConfig {
         self.url = url.into();
         self
     }
-
-    pub fn with_env(mut self, env: HashMap<String, String>) -> Self {
-        self.env = env;
-        self
-    }
 }
 
 impl Default for WsConfig {
     fn default() -> Self {
         Self {
             url: String::from("ws://127.0.0.1:4222"),
-            env: HashMap::new(),
             options: ClientOptions::default(),
         }
     }
@@ -155,219 +165,34 @@ impl Default for WsStartConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WsStartMode {
-    Daemon,
-    Blocking,
-}
-
-#[derive(Debug)]
-pub struct WsServerHandle {
-    listen_url: String,
-    connect_url: String,
-    mode: WsStartMode,
-    reused_existing: bool,
-    log_path: Option<PathBuf>,
-    process_group_id: Option<u32>,
-    child: Option<Child>,
-}
-
-impl WsServerHandle {
-    pub fn listen_url(&self) -> &str {
-        &self.listen_url
-    }
-
-    pub fn connect_url(&self) -> &str {
-        &self.connect_url
-    }
-
-    pub fn mode(&self) -> WsStartMode {
-        self.mode
-    }
-
-    pub fn reused_existing(&self) -> bool {
-        self.reused_existing
-    }
-
-    pub fn started_new_process(&self) -> bool {
-        !self.reused_existing
-    }
-
-    pub fn owns_process(&self) -> bool {
-        self.child.is_some()
-    }
-
-    pub fn log_path(&self) -> Option<&Path> {
-        self.log_path.as_deref()
-    }
-
-    pub fn connect_config(&self, options: ClientOptions) -> WsConfig {
-        WsConfig::new(self.connect_url.clone(), HashMap::new(), options)
-    }
-
-    pub fn shutdown(&mut self) -> Result<(), ClientError> {
-        let process_group_id = self.process_group_id.take();
-        let Some(mut child) = self.child.take() else {
-            return Ok(());
-        };
-
-        let bind_target = websocket_bind_target(&self.listen_url)
-            .or_else(|| websocket_bind_target(&self.connect_url));
-
-        if let Some(process_group_id) = process_group_id {
-            let _ = terminate_process_group(process_group_id);
-        }
-
-        let mut child_exited = false;
-        for attempt in 0..20 {
-            if !child_exited && child.try_wait()?.is_some() {
-                child_exited = true;
-            }
-            if child_exited && bind_target.as_ref().is_none_or(websocket_port_is_free) {
-                return Ok(());
-            }
-            if attempt == 5
-                && let Some(process_group_id) = process_group_id
-            {
-                let _ = terminate_process_group(process_group_id);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        if let Some(process_group_id) = process_group_id {
-            let _ = kill_process_group(process_group_id);
-        }
-        if !child_exited {
-            let _ = child.kill();
-            let _ = child.wait()?;
-        }
-
-        for _ in 0..20 {
-            if bind_target.as_ref().is_none_or(websocket_port_is_free) {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        let target = bind_target
-            .map(|(host, port)| format!("{host}:{port}"))
-            .unwrap_or_else(|| self.connect_url.clone());
-        Err(ClientError::TransportSend(format!(
-            "websocket app-server did not release `{target}` during shutdown"
-        )))
-    }
-
-    pub(crate) fn from_reused_existing(
-        listen_url: String,
-        connect_url: String,
-        mode: WsStartMode,
-        log_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            listen_url,
-            connect_url,
-            mode,
-            reused_existing: true,
-            log_path,
-            process_group_id: None,
-            child: None,
-        }
-    }
-
-    pub(crate) fn daemon_started(
-        listen_url: String,
-        connect_url: String,
-        log_path: PathBuf,
-    ) -> Self {
-        Self {
-            listen_url,
-            connect_url,
-            mode: WsStartMode::Daemon,
-            reused_existing: false,
-            log_path: Some(log_path),
-            process_group_id: None,
-            child: None,
-        }
-    }
-
-    pub(crate) fn blocking_started(listen_url: String, connect_url: String, child: Child) -> Self {
-        let process_group_id = Some(child.id());
-        Self {
-            listen_url,
-            connect_url,
-            mode: WsStartMode::Blocking,
-            reused_existing: false,
-            log_path: None,
-            process_group_id,
-            child: Some(child),
-        }
-    }
-}
-
-impl Drop for WsServerHandle {
-    fn drop(&mut self) {
-        let _ = self.shutdown();
-    }
-}
-
-fn websocket_bind_target(url: &str) -> Option<(String, u16)> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_string();
-    let port = parsed.port()?;
-    Some((host, port))
-}
-
-fn websocket_port_is_free((host, port): &(String, u16)) -> bool {
-    TcpListener::bind((host.as_str(), *port)).is_ok()
-}
-
-#[cfg(unix)]
-unsafe extern "C" {
-    fn kill(pid: i32, sig: i32) -> i32;
-}
-
-#[cfg(unix)]
-fn signal_process_group(process_group_id: u32, signal: i32) -> std::io::Result<()> {
-    let process_group_id = i32::try_from(process_group_id)
-        .map_err(|_| std::io::Error::other("process group id is too large"))?;
-    let result = unsafe { kill(-process_group_id, signal) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(unix)]
-fn terminate_process_group(process_group_id: u32) -> std::io::Result<()> {
-    signal_process_group(process_group_id, 15)
-}
-
-#[cfg(unix)]
-fn kill_process_group(process_group_id: u32) -> std::io::Result<()> {
-    signal_process_group(process_group_id, 9)
-}
-
-#[cfg(not(unix))]
-fn terminate_process_group(_process_group_id: u32) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_process_group_id: u32) -> std::io::Result<()> {
-    Ok(())
-}
-
 struct Inner {
     outbound: mpsc::Sender<Value>,
     pending: Mutex<PendingMap>,
     default_timeout: Duration,
-    initialized: AtomicBool,
-    ready: AtomicBool,
+    /// One of the `HANDSHAKE_*` states.
+    handshake_state: AtomicU8,
+    /// Serializes the `ensure_ready` handshake critical section.
+    handshake_lock: Mutex<()>,
     next_id: AtomicI64,
     event_tx: broadcast::Sender<ServerEvent>,
     event_rx: Mutex<broadcast::Receiver<ServerEvent>>,
     server_request_handlers: server_requests::ServerRequestHandlers,
+}
+
+impl Inner {
+    fn handshake_state(&self) -> u8 {
+        self.handshake_state.load(Ordering::SeqCst)
+    }
+}
+
+/// The `initialize` params used when the caller has not supplied their own
+/// (e.g. [`CodexClient::ensure_ready`]).
+pub(crate) fn default_initialize_params() -> requests::InitializeParams {
+    requests::InitializeParams::new(requests::ClientInfo::new(
+        "codex_sdk_rs",
+        "Codex Rust SDK",
+        env!("CARGO_PKG_VERSION"),
+    ))
 }
 
 #[derive(Clone)]
@@ -440,8 +265,15 @@ impl CodexClient {
         start_ws_server(&config, WsStartMode::Blocking).await
     }
 
-    pub async fn start_and_connect_ws(config: WsConfig) -> Result<Self, ClientError> {
-        ensure_local_ws_app_server(&config.url, &config.env).await?;
+    /// Connects to `config.url`, first ensuring a local app-server daemon is
+    /// running when the URL is a managed loopback target. `env` is passed to
+    /// any daemon this call spawns (it is not used when connecting to an
+    /// already-running server).
+    pub async fn start_and_connect_ws(
+        config: WsConfig,
+        env: HashMap<String, String>,
+    ) -> Result<Self, ClientError> {
+        ensure_local_ws_app_server(&config.url, &env).await?;
 
         let handle = connect_ws_transport(&config.url).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
@@ -453,8 +285,8 @@ impl CodexClient {
             outbound: handle.outbound,
             pending: Mutex::new(HashMap::new()),
             default_timeout,
-            initialized: AtomicBool::new(false),
-            ready: AtomicBool::new(false),
+            handshake_state: AtomicU8::new(HANDSHAKE_NEW),
+            handshake_lock: Mutex::new(()),
             next_id: AtomicI64::new(1),
             event_tx,
             event_rx: Mutex::new(event_rx),
@@ -475,36 +307,103 @@ impl CodexClient {
 
     pub async fn next_event(&self) -> Result<ServerEvent, ClientError> {
         let mut rx = self.inner.event_rx.lock().await;
-        rx.recv().await.map_err(|err| {
-            ClientError::TransportSend(format!("event channel receive failed: {err}"))
-        })
+        loop {
+            match rx.recv().await {
+                Ok(event) => return Ok(event),
+                // Skip over dropped events instead of failing: the channel is
+                // still alive and later events remain deliverable.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(ClientError::TransportClosed);
+                }
+            }
+        }
     }
 
+    /// Sends the `initialize` handshake request. Errors with
+    /// [`ClientError::AlreadyInitialized`] when the handshake request has
+    /// already been performed (explicitly or via [`Self::ensure_ready`]).
     pub async fn initialize(
         &self,
         params: requests::InitializeParams,
     ) -> Result<responses::InitializeResult, ClientError> {
-        if self.inner.initialized.load(Ordering::SeqCst) {
-            return Err(ClientError::AlreadyInitialized);
-        }
-
         let result: responses::InitializeResult = self
-            .request_typed_internal("initialize", params, None, false)
+            .request_typed_internal(METHOD_INITIALIZE, params, None, false)
             .await?;
 
-        self.inner.initialized.store(true, Ordering::SeqCst);
+        self.inner
+            .handshake_state
+            .fetch_max(HANDSHAKE_INITIALIZED, Ordering::SeqCst);
         Ok(result)
     }
 
+    /// Sends the `initialized` handshake notification, marking the connection
+    /// ready. Errors with [`ClientError::NotInitialized`] when `initialize`
+    /// has not completed yet.
     pub async fn initialized(&self) -> Result<(), ClientError> {
-        if !self.inner.initialized.load(Ordering::SeqCst) {
+        if self.inner.handshake_state() < HANDSHAKE_INITIALIZED {
             return Err(ClientError::NotInitialized {
-                method: "initialized".to_string(),
+                method: METHOD_INITIALIZED.to_string(),
             });
         }
-        self.send_notification("initialized", EmptyObject::default(), false)
+        self.send_notification(METHOD_INITIALIZED, EmptyObject::default(), false)
             .await?;
-        self.inner.ready.store(true, Ordering::SeqCst);
+        self.inner
+            .handshake_state
+            .fetch_max(HANDSHAKE_READY, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Idempotently completes the `initialize`/`initialized` handshake with
+    /// default client info: exactly one caller performs each handshake step,
+    /// even under concurrent invocation; every other caller waits and then
+    /// returns `Ok(())`.
+    pub async fn ensure_ready(&self) -> Result<(), ClientError> {
+        self.ensure_ready_with(&default_initialize_params()).await
+    }
+
+    /// [`Self::ensure_ready`] with explicit `initialize` params, used when
+    /// this caller ends up performing the handshake.
+    pub(crate) async fn ensure_ready_with(
+        &self,
+        params: &requests::InitializeParams,
+    ) -> Result<(), ClientError> {
+        if self.inner.handshake_state() == HANDSHAKE_READY {
+            return Ok(());
+        }
+
+        let _guard = self.inner.handshake_lock.lock().await;
+        if self.inner.handshake_state() == HANDSHAKE_READY {
+            return Ok(());
+        }
+
+        if self.inner.handshake_state() < HANDSHAKE_INITIALIZED {
+            self.inner
+                .handshake_state
+                .store(HANDSHAKE_INITIALIZING, Ordering::SeqCst);
+            let initialize_result: Result<responses::InitializeResult, ClientError> = self
+                .request_typed_internal(METHOD_INITIALIZE, params.clone(), None, false)
+                .await;
+            match initialize_result {
+                Ok(_) => {
+                    self.inner
+                        .handshake_state
+                        .store(HANDSHAKE_INITIALIZED, Ordering::SeqCst);
+                }
+                Err(err) => {
+                    self.inner
+                        .handshake_state
+                        .store(HANDSHAKE_NEW, Ordering::SeqCst);
+                    return Err(err);
+                }
+            }
+        }
+
+        self.send_notification(METHOD_INITIALIZED, EmptyObject::default(), false)
+            .await?;
+        self.inner
+            .handshake_state
+            .store(HANDSHAKE_READY, Ordering::SeqCst);
         Ok(())
     }
 
@@ -515,7 +414,7 @@ impl CodexClient {
         timeout: Option<Duration>,
     ) -> Result<Value, ClientError> {
         let method = method.into();
-        let requires_ready = method != "initialize";
+        let requires_ready = method != METHOD_INITIALIZE;
         self.request_value_internal(&method, params, timeout, requires_ready)
             .await
     }
@@ -526,7 +425,7 @@ impl CodexClient {
         params: Value,
     ) -> Result<(), ClientError> {
         let method = method.into();
-        let requires_ready = method != "initialized";
+        let requires_ready = method != METHOD_INITIALIZED;
         self.send_notification(&method, params, requires_ready)
             .await
     }
@@ -557,7 +456,7 @@ impl CodexClient {
         params: P,
         requires_ready: bool,
     ) -> Result<(), ClientError> {
-        if requires_ready && !self.inner.ready.load(Ordering::SeqCst) {
+        if requires_ready && self.inner.handshake_state() < HANDSHAKE_READY {
             return Err(ClientError::NotReady {
                 method: method.to_string(),
             });
@@ -611,13 +510,16 @@ impl CodexClient {
         timeout: Option<Duration>,
         requires_ready: bool,
     ) -> Result<Value, ClientError> {
-        if requires_ready && !self.inner.ready.load(Ordering::SeqCst) {
+        if requires_ready && self.inner.handshake_state() < HANDSHAKE_READY {
             return Err(ClientError::NotReady {
                 method: method.to_string(),
             });
         }
 
-        if method == "initialize" && self.inner.initialized.load(Ordering::SeqCst) {
+        // The only request exempt from the ready gate is the `initialize`
+        // handshake itself; re-sending it after the handshake completed is an
+        // explicit re-initialization error.
+        if !requires_ready && self.inner.handshake_state() >= HANDSHAKE_INITIALIZED {
             return Err(ClientError::AlreadyInitialized);
         }
 
@@ -722,7 +624,7 @@ async fn fail_all_pending(inner: &Arc<Inner>, message: &str) {
 
     for (_, sender) in entries {
         let _ = sender.send(Err(RpcError {
-            code: -32098,
+            code: RPC_ERROR_CODE_TRANSPORT_FAILURE,
             message: message.to_string(),
             data: None,
         }));
@@ -880,7 +782,10 @@ mod tests {
             .expect("timed out waiting for outbound response")
             .expect("expected outbound response frame");
         assert_eq!(outbound.get("id"), Some(&json!(44)));
-        assert_eq!(outbound.pointer("/error/code"), Some(&json!(-32001)));
+        assert_eq!(
+            outbound.pointer("/error/code"),
+            Some(&json!(crate::error::RPC_ERROR_CODE_HANDLER_FAILED))
+        );
         let message = outbound
             .pointer("/error/message")
             .and_then(Value::as_str)
@@ -893,6 +798,74 @@ mod tests {
             message.contains("boom"),
             "unexpected error message: {message}"
         );
+    }
+
+    #[tokio::test]
+    async fn concurrent_ensure_ready_sends_exactly_one_initialize() {
+        let (client, inbound_tx, mut outbound_rx) = test_client();
+
+        let first = client.clone();
+        let second = client.clone();
+        let first_task = tokio::spawn(async move { first.ensure_ready().await });
+        let second_task = tokio::spawn(async move { second.ensure_ready().await });
+
+        // Exactly one `initialize` request must appear on the wire; answer it.
+        let request = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .expect("timed out waiting for initialize request")
+            .expect("expected initialize request frame");
+        assert_eq!(
+            request.get("method").and_then(Value::as_str),
+            Some(METHOD_INITIALIZE)
+        );
+        let id = request.get("id").cloned().expect("initialize request id");
+        inbound_tx
+            .send(Ok(json!({ "id": id, "result": {} })))
+            .await
+            .expect("send initialize response");
+
+        // Followed by exactly one `initialized` notification.
+        let notification = timeout(Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .expect("timed out waiting for initialized notification")
+            .expect("expected initialized notification frame");
+        assert_eq!(
+            notification.get("method").and_then(Value::as_str),
+            Some(METHOD_INITIALIZED)
+        );
+        assert!(
+            notification.get("id").is_none(),
+            "initialized must be a notification"
+        );
+
+        // Both racing callers complete successfully.
+        first_task
+            .await
+            .expect("join first ensure_ready")
+            .expect("first ensure_ready should succeed");
+        second_task
+            .await
+            .expect("join second ensure_ready")
+            .expect("second ensure_ready should succeed");
+
+        // No second handshake frame (in particular no second initialize).
+        assert!(
+            timeout(Duration::from_millis(200), outbound_rx.recv())
+                .await
+                .is_err(),
+            "expected no further outbound frames after the handshake"
+        );
+
+        // The handshake is done: an explicit re-initialize is rejected and
+        // another ensure_ready is a no-op.
+        assert!(matches!(
+            client.initialize(default_initialize_params()).await,
+            Err(ClientError::AlreadyInitialized)
+        ));
+        client
+            .ensure_ready()
+            .await
+            .expect("ensure_ready should stay idempotent");
     }
 
     /// Accumulates every wire method string in the shared RPC table into a
