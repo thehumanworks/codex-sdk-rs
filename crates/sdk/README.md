@@ -89,6 +89,11 @@ println!("response: {}", turn.final_response);
 # }
 ```
 
+Set `.service_tier(ServiceTier::Default)` or
+`.service_tier(ServiceTier::Fast)` on `ThreadOptionsBuilder` to apply a tier to
+thread start/resume and subsequent turns. The same setter on
+`TurnOptionsBuilder` overrides the tier for one turn.
+
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
 For terminal-agnostic presentation, `ThreadEventRenderer` converts streamed
 events into typed `RenderedItem` markdown fragments. It emits text deltas

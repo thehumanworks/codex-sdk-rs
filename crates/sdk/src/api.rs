@@ -126,6 +126,14 @@ wire_enum! {
 }
 
 wire_enum! {
+    /// App-server service tier for thread and turn requests.
+    pub enum ServiceTier {
+        Default => "default",
+        Fast => "fast",
+    }
+}
+
+wire_enum! {
     pub enum Personality {
         None => "none",
         Friendly => "friendly",
@@ -373,6 +381,7 @@ options_builder!(ThreadOptions, ThreadOptionsBuilder, {
     [bool] skip_git_repo_check: bool;
     [copy] model_reasoning_effort: ModelReasoningEffort;
     [copy] model_reasoning_summary: ModelReasoningSummary;
+    [copy] service_tier: ServiceTier;
     [bool] network_access_enabled: bool;
     [copy] web_search_mode: WebSearchMode;
     [bool] web_search_enabled: bool;
@@ -396,6 +405,7 @@ options_builder!(TurnOptions, TurnOptionsBuilder, {
     [into_string] model_provider: String;
     [copy] model_reasoning_effort: ModelReasoningEffort;
     [copy] model_reasoning_summary: ModelReasoningSummary;
+    [copy] service_tier: ServiceTier;
     [copy] personality: Personality;
     [copy] approval_policy: ApprovalMode;
     [value] sandbox_policy: Value;
@@ -1490,6 +1500,7 @@ struct ResolvedOptions {
     working_directory: Option<String>,
     model_reasoning_effort: Option<ModelReasoningEffort>,
     model_reasoning_summary: Option<ModelReasoningSummary>,
+    service_tier: Option<ServiceTier>,
     personality: Option<Personality>,
     approval_policy: Option<ApprovalMode>,
     sandbox_policy: Option<Value>,
@@ -1509,6 +1520,7 @@ impl ResolvedOptions {
             working_directory: options.working_directory.clone(),
             model_reasoning_effort: options.model_reasoning_effort,
             model_reasoning_summary: options.model_reasoning_summary,
+            service_tier: options.service_tier,
             personality: options.personality,
             approval_policy: options.approval_policy,
             sandbox_policy: options.sandbox_policy.clone(),
@@ -1540,6 +1552,7 @@ impl ResolvedOptions {
             model_reasoning_summary: turn_options
                 .model_reasoning_summary
                 .or(options.model_reasoning_summary),
+            service_tier: turn_options.service_tier.or(options.service_tier),
             personality: turn_options.personality.or(options.personality),
             approval_policy: turn_options.approval_policy.or(options.approval_policy),
             sandbox_policy: turn_options
@@ -1572,6 +1585,12 @@ impl ResolvedOptions {
 /// turn/start. Per-method extras (e.g. `sandboxPolicy` on resume) are inserted
 /// by the individual builders.
 fn insert_common_extras(extra: &mut Map<String, Value>, resolved: &ResolvedOptions) {
+    if let Some(service_tier) = resolved.service_tier {
+        extra.insert(
+            "serviceTier".to_string(),
+            Value::String(service_tier.as_str().to_string()),
+        );
+    }
     if let Some(skip) = resolved.skip_git_repo_check {
         extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
     }
@@ -2364,6 +2383,12 @@ mod tests {
         ["low", "medium", "high"]
     );
     wire_enum_round_trip_test!(
+        service_tier_round_trips,
+        ServiceTier,
+        [Default, Fast],
+        ["default", "fast"]
+    );
+    wire_enum_round_trip_test!(
         personality_round_trips,
         Personality,
         [None, Friendly, Pragmatic],
@@ -2390,6 +2415,7 @@ mod tests {
             sandbox_mode: SandboxMode,
             model_reasoning_effort: ModelReasoningEffort,
             model_reasoning_summary: ModelReasoningSummary,
+            service_tier: ServiceTier,
             personality: Personality,
             web_search: WebSearchMode,
             collaboration_mode: CollaborationModeKind,
@@ -2401,6 +2427,7 @@ approval_policy = "on-request"
 sandbox_mode = "danger-full-access"
 model_reasoning_effort = "xhigh"
 model_reasoning_summary = "detailed"
+service_tier = "fast"
 personality = "pragmatic"
 web_search = "live"
 collaboration_mode = "plan"
@@ -2415,6 +2442,7 @@ collaboration_mode = "plan"
                 sandbox_mode: SandboxMode::DangerFullAccess,
                 model_reasoning_effort: ModelReasoningEffort::XHigh,
                 model_reasoning_summary: ModelReasoningSummary::Detailed,
+                service_tier: ServiceTier::Fast,
                 personality: Personality::Pragmatic,
                 web_search: WebSearchMode::Live,
                 collaboration_mode: CollaborationModeKind::Plan,
@@ -2429,6 +2457,7 @@ collaboration_mode = "plan"
                 "sandbox_mode": "danger-full-access",
                 "model_reasoning_effort": "xhigh",
                 "model_reasoning_summary": "detailed",
+                "service_tier": "fast",
                 "personality": "pragmatic",
                 "web_search": "live",
                 "collaboration_mode": "plan",
@@ -3013,6 +3042,7 @@ collaboration_mode = "plan"
             .skip_git_repo_check(true)
             .model_reasoning_effort(ModelReasoningEffort::None)
             .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .service_tier(ServiceTier::Fast)
             .network_access_enabled(true)
             .web_search_mode(WebSearchMode::Live)
             .web_search_enabled(false)
@@ -3049,6 +3079,7 @@ collaboration_mode = "plan"
         );
         assert_eq!(thread_params.effort.as_deref(), Some("none"));
         assert_eq!(thread_params.summary.as_deref(), Some("auto"));
+        assert_eq!(thread_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(thread_params.personality.as_deref(), Some("pragmatic"));
         assert_eq!(thread_params.ephemeral, Some(true));
         assert_eq!(
@@ -3111,6 +3142,7 @@ collaboration_mode = "plan"
         assert_eq!(resume_params.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(resume_params.sandbox.as_deref(), Some("workspace-write"));
         assert_eq!(resume_params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(resume_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(
             resume_params
                 .config
@@ -3146,6 +3178,7 @@ collaboration_mode = "plan"
         assert_eq!(turn_params.effort.as_deref(), Some("none"));
         assert_eq!(turn_params.summary.as_deref(), Some("auto"));
         assert_eq!(turn_params.personality.as_deref(), Some("pragmatic"));
+        assert_eq!(turn_params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(
             turn_params.sandbox_policy,
             Some(json!({"type": "dangerFullAccess"}))
@@ -3172,6 +3205,7 @@ collaboration_mode = "plan"
             .sandbox_policy(json!({"type": "dangerFullAccess"}))
             .model_reasoning_effort(ModelReasoningEffort::Low)
             .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .service_tier(ServiceTier::Fast)
             .ephemeral(true)
             .collaboration_mode(CollaborationMode::new(
                 CollaborationModeKind::Plan,
@@ -3218,6 +3252,7 @@ collaboration_mode = "plan"
                 "experimentalRawEvents",
                 "networkAccessEnabled",
                 "persistExtendedHistory",
+                "serviceTier",
                 "skipGitRepoCheck",
                 "webSearchEnabled",
                 "webSearchMode",
@@ -3250,6 +3285,7 @@ collaboration_mode = "plan"
                 "experimentalRawEvents",
                 "networkAccessEnabled",
                 "sandboxPolicy",
+                "serviceTier",
                 "skipGitRepoCheck",
                 "summary",
                 "webSearchEnabled",
@@ -3281,6 +3317,7 @@ collaboration_mode = "plan"
                 "additionalDirectories",
                 "collaborationMode",
                 "networkAccessEnabled",
+                "serviceTier",
                 "skipGitRepoCheck",
                 "webSearchEnabled",
                 "webSearchMode",
@@ -3303,6 +3340,28 @@ collaboration_mode = "plan"
             disabled_params.extra.get("skipGitRepoCheck"),
             Some(&Value::Bool(false))
         );
+    }
+
+    #[test]
+    fn service_tier_encodes_for_thread_start_resume_and_turn_start() {
+        for service_tier in [ServiceTier::Default, ServiceTier::Fast] {
+            let options = ThreadOptions::builder().service_tier(service_tier).build();
+            let expected = json!(service_tier.as_str());
+
+            let start = build_thread_start_params(&options);
+            assert_eq!(start.extra.get("serviceTier"), Some(&expected));
+
+            let resume = build_thread_resume_params("thread_123", &options);
+            assert_eq!(resume.extra.get("serviceTier"), Some(&expected));
+
+            let turn = build_turn_start_params(
+                "thread_123",
+                Input::text("hello"),
+                &options,
+                &TurnOptions::default(),
+            );
+            assert_eq!(turn.extra.get("serviceTier"), Some(&expected));
+        }
     }
 
     #[test]
@@ -3362,6 +3421,7 @@ collaboration_mode = "plan"
             .model_provider("thread-provider")
             .working_directory("/tmp/thread")
             .model_reasoning_effort(ModelReasoningEffort::Low)
+            .service_tier(ServiceTier::Default)
             .personality(Personality::Friendly)
             .approval_policy(ApprovalMode::OnRequest)
             .sandbox_policy(json!({"thread": true}))
@@ -3381,6 +3441,7 @@ collaboration_mode = "plan"
         let turn_options = TurnOptions::builder()
             .model("turn-model")
             .model_reasoning_effort(ModelReasoningEffort::High)
+            .service_tier(ServiceTier::Fast)
             .sandbox_policy(json!({"turn": true}))
             .web_search_mode(WebSearchMode::Live)
             .skip_git_repo_check(true)
@@ -3393,6 +3454,7 @@ collaboration_mode = "plan"
             merged.model_reasoning_effort,
             Some(ModelReasoningEffort::High)
         );
+        assert_eq!(merged.service_tier, Some(ServiceTier::Fast));
         assert_eq!(merged.sandbox_policy, Some(json!({"turn": true})));
         assert_eq!(merged.web_search_mode, Some(WebSearchMode::Live));
         assert_eq!(merged.skip_git_repo_check, Some(true));
@@ -3428,6 +3490,7 @@ collaboration_mode = "plan"
             .working_directory("/tmp/thread")
             .model_reasoning_effort(ModelReasoningEffort::Low)
             .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .service_tier(ServiceTier::Default)
             .personality(Personality::Friendly)
             .approval_policy(ApprovalMode::OnRequest)
             .sandbox_policy(json!({"thread": true}))
@@ -3444,6 +3507,7 @@ collaboration_mode = "plan"
             .working_directory("/tmp/turn")
             .model_reasoning_effort(ModelReasoningEffort::High)
             .model_reasoning_summary(ModelReasoningSummary::Detailed)
+            .service_tier(ServiceTier::Fast)
             .personality(Personality::Pragmatic)
             .approval_policy(ApprovalMode::Never)
             .sandbox_policy(json!({"turn": true}))
@@ -3467,6 +3531,7 @@ collaboration_mode = "plan"
         assert_eq!(params.model_provider.as_deref(), Some("provider-turn"));
         assert_eq!(params.effort.as_deref(), Some("high"));
         assert_eq!(params.summary.as_deref(), Some("detailed"));
+        assert_eq!(params.extra.get("serviceTier"), Some(&json!("fast")));
         assert_eq!(params.personality.as_deref(), Some("pragmatic"));
         assert_eq!(params.approval_policy.as_deref(), Some("never"));
         assert_eq!(params.sandbox_policy, Some(json!({"turn": true})));

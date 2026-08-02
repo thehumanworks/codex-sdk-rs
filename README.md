@@ -82,6 +82,11 @@ items with no text, such as empty reasoning items, are suppressed.
 
 `TurnOptionsBuilder` supports raw JSON schemas (`.output_schema(...)`) and typed schema generation (`.output_schema_for::<T>()`) for `output_schema`, plus per-turn overrides for `cwd`, `model`, `model_provider`, reasoning, personality, approval/sandbox, collaboration mode, and raw extra fields.
 
+Set `.service_tier(ServiceTier::Default)` or
+`.service_tier(ServiceTier::Fast)` on `ThreadOptionsBuilder` to apply a tier to
+thread start/resume and subsequent turns. The same setter on
+`TurnOptionsBuilder` overrides the tier for one turn.
+
 High-level thread lifecycle helpers now include `set_name(...)`, `read(...)`, `archive()`, `unarchive()`, `rollback(...)`, `compact_start()`, `steer(...)`, and `interrupt(...)`.
 
 Use `ask(...)` or `ask_with_options(...)` when you only need the final response string:
@@ -164,6 +169,7 @@ struct Reply {
 `ThreadOptionsBuilder` also exposes protocol-level options that were previously missing, including:
 - `model_provider`
 - `model_reasoning_summary`
+- `service_tier` (`ServiceTier::Default` or `ServiceTier::Fast`)
 - `personality`
 - `sandbox_policy`
 - `base_instructions`
@@ -325,6 +331,7 @@ cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 
 - model: `gpt-5.6-luna` (override: `--model`)
 - reasoning effort: `max` (override: `--reasoning-effort`)
+- service tier: `default` (`--fast` selects the `fast` tier for the thread and its turns)
 - websocket transport (`ws://127.0.0.1:4222`) unless `luna exec --stdio` is provided
 - Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
 - human output includes agent messages, non-empty reasoning, tools, commands, patches, statuses, and errors without echoing the submitted prompt; semantic color is disabled for non-TTY output and `NO_COLOR`
@@ -335,7 +342,7 @@ cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 Additional optional config flags:
 
 - transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_APP_SERVER_WS_URL` (legacy fallback: `CODEX_WEB_SERVER_URL`)
-- model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
+- model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`, `--fast`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`
 - instructions/personality: `--agent`, `--base-instructions`, `--developer-instructions`, `--personality`

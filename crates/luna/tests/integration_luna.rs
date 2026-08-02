@@ -172,7 +172,7 @@ async fn luna_dependency_failure_has_stable_code_and_exit_status()
 }
 
 #[tokio::test]
-async fn luna_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error::Error>> {
+async fn luna_fast_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = INTEGRATION_LOCK.lock().await;
     let env = shared_env();
     let token = unique_token("luna-resume");
@@ -182,6 +182,7 @@ async fn luna_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error:
         "exec".to_string(),
         "--final-response".to_string(),
         "--stdio".to_string(),
+        "--fast".to_string(),
         "--resume".to_string(),
         thread_id,
         "Return only the sentinel token from earlier in this same session.".to_string(),

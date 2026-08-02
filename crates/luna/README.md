@@ -78,6 +78,7 @@ CODEX_BINARY=/opt/codex/bin/codex luna doctor --summary
 Other common flows:
 
 ```sh
+luna exec --fast "Use the fast service tier for this turn."
 luna exec --final-response "Summarize this repository."
 luna exec --continue "Follow up on the previous answer."
 luna exec --resume <SESSION_ID> "Continue this session."
@@ -86,6 +87,9 @@ luna sessions --all
 ```
 
 Run `luna --help` for the complete typed thread/turn option surface.
+Without `--fast`, Luna explicitly selects the `default` service tier. With
+`--fast`, it sends the app-server `serviceTier: "fast"` override for new,
+resumed, and subsequent turns over either transport.
 Generate shell completions from that same declarative command definition:
 
 ```sh

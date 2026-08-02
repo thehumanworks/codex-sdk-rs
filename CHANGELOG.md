@@ -65,6 +65,9 @@
   `FromStr` (accepting the wire spellings), and a `VARIANTS` const.
   New `ModelVerbosity` enum (previously duplicated in each CLI) with the
   same surface. `api::UnknownItem` is now exported from the crate root.
+- **Typed service-tier selection.** `ServiceTier::{Default, Fast}` can be set
+  in `ThreadOptions` or `TurnOptions` and is encoded as app-server
+  `serviceTier` on thread start/resume and turn start.
 - **One RPC method table.** The full 43-method surface (plus the two
   `skills_remote_*` aliases) is defined once in `protocol::methods` and
   expanded into both `CodexClient` and `Codex`; a compile-time test proves
@@ -94,6 +97,8 @@
 
 ## luna 0.3.0 — UNRELEASED
 
+- New `--fast` flag selects app-server `serviceTier: "fast"`; without it Luna
+  explicitly selects `default`. The behavior is transport-independent.
 - **Fix:** `--json` output now uses canonical wire casing for command,
   file-change, and tool-call statuses (`inProgress`, `completed`, …);
   previously Rust `Debug` names (`InProgress`) leaked into the JSON.

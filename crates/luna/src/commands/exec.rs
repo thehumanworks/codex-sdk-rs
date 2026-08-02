@@ -26,6 +26,7 @@ pub(super) async fn run(cli: CliArgs) -> Result<ExitCode, LunaError> {
         reasoning_effort,
         reasoning_summary,
         model_verbosity,
+        service_tier,
         config_profile,
         approval_policy,
         sandbox_mode,
@@ -129,7 +130,8 @@ pub(super) async fn run(cli: CliArgs) -> Result<ExitCode, LunaError> {
 
     let mut thread_options = ThreadOptions::builder()
         .model(model.unwrap_or_else(|| MODEL.to_string()))
-        .working_directory(working_directory);
+        .working_directory(working_directory)
+        .service_tier(service_tier);
     if let Some(model_provider) = model_provider {
         thread_options = thread_options.model_provider(model_provider);
     }

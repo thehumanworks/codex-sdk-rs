@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use codex_app_server_sdk::{
     ApprovalMode, ModelReasoningEffort, ModelReasoningSummary, ModelVerbosity, Personality,
-    SandboxMode, WebSearchMode,
+    SandboxMode, ServiceTier, WebSearchMode,
 };
 
 use crate::APP_NAME;
@@ -44,6 +44,7 @@ pub(crate) struct CliArgs {
     pub(crate) reasoning_effort: Option<ModelReasoningEffort>,
     pub(crate) reasoning_summary: Option<ModelReasoningSummary>,
     pub(crate) model_verbosity: Option<ModelVerbosity>,
+    pub(crate) service_tier: ServiceTier,
     pub(crate) config_profile: Option<String>,
     pub(crate) approval_policy: Option<ApprovalMode>,
     pub(crate) sandbox_mode: Option<SandboxMode>,
@@ -145,6 +146,9 @@ struct ExecCliArgs {
     /// Set model verbosity through Codex config
     #[arg(long, value_parser = ["low", "medium", "high"])]
     model_verbosity: Option<String>,
+    /// Use the fast service tier
+    #[arg(long)]
+    fast: bool,
     /// Set a Codex config profile override
     #[arg(long)]
     config_profile: Option<String>,
@@ -377,6 +381,11 @@ fn exec_cli_args(args: ExecCliArgs) -> Result<CliArgs, LunaError> {
             parse_wire_enum::<ModelVerbosity>(raw, "--model-verbosity", ModelVerbosity::VARIANTS)
         })
         .transpose()?;
+    cli.service_tier = if args.fast {
+        ServiceTier::Fast
+    } else {
+        ServiceTier::Default
+    };
     cli.config_profile = normalize_optional_string(args.config_profile, "--config-profile")?;
     cli.approval_policy = args
         .approval_policy
@@ -515,6 +524,7 @@ fn empty_cli_args(command_kind: CommandKind, transport_mode: TransportMode) -> C
         reasoning_effort: None,
         reasoning_summary: None,
         model_verbosity: None,
+        service_tier: ServiceTier::Default,
         config_profile: None,
         approval_policy: None,
         sandbox_mode: None,
@@ -879,6 +889,26 @@ mod tests {
         };
 
         assert!(cli.final_response_only);
+        assert_eq!(cli.service_tier, ServiceTier::Default);
+        assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn parse_cli_args_fast_selects_fast_service_tier() {
+        let parsed = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--fast".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse --fast");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected run command");
+        };
+
+        assert_eq!(cli.service_tier, ServiceTier::Fast);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
     }
 
@@ -1040,6 +1070,14 @@ mod tests {
         assert!(help.contains("doctor"));
         assert!(help.contains("completions"));
         assert!(help.contains("Run one Codex turn"));
+
+        let mut command = CliParser::command();
+        let exec_help = command
+            .find_subcommand_mut("exec")
+            .expect("exec subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(exec_help.contains("--fast"));
     }
 
     #[test]
