@@ -28,7 +28,7 @@ pub use events::render::{RenderedItem, RenderedItemKind, ThreadEventRenderer, re
 pub use events::{ServerEvent, ServerNotification, ServerRequestEvent};
 pub use protocol::{notifications, requests, responses, server_requests, shared};
 pub use schema::{
-    OpenAiSerializable, deserialize_openai_value, openai_json_schema_for, serialize_openai_value,
+    OpenAiSerializable, openai_json_schema_for,
 };
 pub use schemars::{self, JsonSchema};
 pub use serde::{self, Deserialize, Serialize};

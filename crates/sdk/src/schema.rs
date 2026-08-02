@@ -11,14 +11,14 @@ pub trait OpenAiSerializable: Sized {
     where
         Self: Serialize,
     {
-        serialize_openai_value(self)
+        serde_json::to_value(self)
     }
 
     fn from_openai_value(value: Value) -> serde_json::Result<Self>
     where
         Self: DeserializeOwned,
     {
-        deserialize_openai_value(value)
+        serde_json::from_value(value)
     }
 }
 
@@ -34,20 +34,6 @@ where
         serde_json::to_value(schema).expect("serializing generated schema should not fail");
     enforce_openai_object_constraints(&mut schema);
     schema
-}
-
-pub fn serialize_openai_value<T>(value: &T) -> serde_json::Result<Value>
-where
-    T: Serialize,
-{
-    serde_json::to_value(value)
-}
-
-pub fn deserialize_openai_value<T>(value: Value) -> serde_json::Result<T>
-where
-    T: DeserializeOwned,
-{
-    serde_json::from_value(value)
 }
 
 fn enforce_openai_object_constraints(value: &mut Value) {
