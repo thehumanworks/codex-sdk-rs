@@ -114,6 +114,64 @@ fn assert_luna_resume_output(
 }
 
 #[tokio::test]
+async fn luna_doctor_json_reports_missing_codex_without_leaking_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = tokio::process::Command::new(luna_binary());
+    cmd.args(["doctor", "--json"])
+        .env("CODEX_BINARY", "/definitely/missing/codex");
+    let output = tokio::time::timeout(TEST_TIMEOUT, cmd.output()).await??;
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8(output.stdout)?;
+    let report: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["overall_status"], "fail");
+    assert!(report["checks"].as_array().is_some_and(|checks| {
+        checks
+            .iter()
+            .any(|check| check["code"] == "codex.binary.missing")
+    }));
+    assert!(!stdout.contains("/Users/"));
+    assert!(!stdout.contains("/definitely/missing/codex"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn luna_doctor_redacts_env_url_and_marks_it_connect_only()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = tokio::process::Command::new(luna_binary());
+    cmd.args(["doctor", "--json"]).env(
+        "CODEX_APP_SERVER_WS_URL",
+        "wss://user:secret@example.com/app?token=secret",
+    );
+    let output = tokio::time::timeout(TEST_TIMEOUT, cmd.output()).await??;
+    let stdout = String::from_utf8(output.stdout)?;
+    let report: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(report["resolution"]["daemon_policy"], "connect_only");
+    assert_eq!(
+        report["resolution"]["websocket_endpoint"],
+        "wss://example.com/app"
+    );
+    assert!(!stdout.contains("user:secret"));
+    assert!(!stdout.contains("token=secret"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn luna_dependency_failure_has_stable_code_and_exit_status()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = tokio::process::Command::new(luna_binary());
+    cmd.args(["exec", "--stdio", "Reply with ok"])
+        .env("CODEX_BINARY", "/definitely/missing/codex");
+    let output = tokio::time::timeout(TEST_TIMEOUT, cmd.output()).await??;
+    assert_eq!(output.status.code(), Some(3));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("[luna.dependency]"));
+    assert!(stderr.contains("luna doctor --summary"));
+    assert!(!stderr.contains("/definitely/missing/codex"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn luna_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = INTEGRATION_LOCK.lock().await;
     let env = shared_env();

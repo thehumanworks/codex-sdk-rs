@@ -1,92 +1,36 @@
+mod doctor;
+mod environment;
+mod error;
+
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::process::ExitCode;
 
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use codex_app_server_sdk::api::{
     ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary, Personality,
-    SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
+    SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions,
     UserMessageContentItem, WebSearchMode,
 };
-use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
+use codex_app_server_sdk::{StdioConfig, requests, responses};
+use doctor::{DoctorOptions, run_doctor};
+use environment::resolve_codex_binary;
+use error::LunaError;
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use thiserror::Error;
 
 const APP_NAME: &str = "luna";
 const MODEL: &str = "gpt-5.6-luna";
 const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
+const CODEX_APP_SERVER_WS_URL_ENV: &str = "CODEX_APP_SERVER_WS_URL";
 const CODEX_WEB_SERVER_URL_ENV: &str = "CODEX_WEB_SERVER_URL";
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 const SESSION_PREVIEW_CHAR_LIMIT: usize = 96;
-
-const USAGE: &str = "\
-Usage:
-  luna exec [OPTIONS] [PROMPT...]
-  luna x [OPTIONS] [PROMPT...]
-  luna start [--ws-url URL]
-  luna sessions [--all] [--ws-url URL | --stdio]
-
-`luna exec` (or `luna x`) runs one turn with:
-  model default: gpt-5.6-luna
-  reasoning effort default: max
-  transport default: websocket (ws://127.0.0.1:4222)
-
-Commands:
-  exec, x                          Run one turn with a prompt argument or stdin
-  start                            Ensure the websocket daemon is running, then exit
-  sessions                         List recorded sessions ordered by last activity
-                                   (default: sessions from current directory; use --all for all)
-
-Options:
-  --agent NAME                     Load ~/.codex/config.toml [agents.NAME]
-  --cwd PATH                       Set Codex working directory (default: current shell directory)
-  --ws-url URL                     Set websocket URL (default: ws://127.0.0.1:4222;
-                                   exec/start also read CODEX_WEB_SERVER_URL)
-  --no-daemon                      Do not manage or spawn a local websocket app-server daemon
-  --stdio                          Use app-server stdio transport instead of websocket
-  --model MODEL                    Override model (default: gpt-5.6-luna)
-  --model-provider PROVIDER        Override model provider
-  --reasoning-effort LEVEL         Override reasoning effort: none|minimal|low|medium|high|xhigh|max|ultra
-  --reasoning-summary MODE         Override reasoning summary: none|auto|concise|detailed
-  --model-verbosity LEVEL          Set model verbosity via config: low|medium|high
-  --config-profile NAME            Set config profile override
-  --approval-policy MODE           Set approval policy: never|on-request|on-failure|untrusted
-  --sandbox MODE                   Set sandbox mode: read-only|workspace-write|danger-full-access
-  --sandbox-policy-json JSON       Set sandbox policy JSON payload
-  --sandbox-network-access-enabled Enable workspace-write network access in config
-  --sandbox-network-access-disabled Disable workspace-write network access in config
-  --sandbox-writable-root PATH     Add workspace-write writable root (repeatable)
-  --web-search-mode MODE           Set web search mode: disabled|cached|live
-  --dynamic-tools-json JSON        Set thread/start dynamicTools JSON array
-  --personality MODE               Set personality: none|friendly|pragmatic
-  --base-instructions TEXT         Set base instructions
-  --developer-instructions TEXT    Set developer instructions (overrides --agent instructions)
-  --ephemeral                      Run without persisting session files
-  --experimental-raw-events        Enable raw response item events
-  --persist-extended-history       Persist extended history for resume/fork/read
-  --config KEY=VALUE               Set config override (VALUE parsed as JSON when valid)
-  --config-json JSON               Merge config object JSON into thread config
-  --output-schema FILE             Load turn output schema JSON from file (codex exec compat)
-  --output-schema-json JSON        Set turn output schema JSON
-  --output-schema-file PATH        Load turn output schema JSON from file
-  --turn-extra-json JSON           Merge object JSON into turn/start raw extras
-  -c, --continue
-                                  Resume the most recent recorded session
-  -r, --resume ID
-                                  Resume the specified session id
-  --final-response
-                                  Output only the final message text (no streamed deltas)
-  --json                           Print events to stdout as JSONL (codex exec compat)
-  --all                            Show all sessions (used with sessions command)
-  -h, --help                       Show this help
-
-If PROMPT is omitted, `luna exec` and `luna x` read the prompt from stdin.
-";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ResumeTarget {
@@ -105,6 +49,7 @@ enum CommandKind {
     Exec,
     Start,
     Sessions,
+    Doctor,
 }
 
 #[derive(Debug)]
@@ -142,6 +87,7 @@ struct CliArgs {
     sessions_all: bool,
     final_response_only: bool,
     json_output: bool,
+    doctor_live: bool,
     transport_mode: TransportMode,
     prompt_parts: Vec<String>,
 }
@@ -176,7 +122,9 @@ struct AgentConfigLayer {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum ParsedCommand {
-    Help,
+    Help(String),
+    Version(String),
+    Completions(Shell),
     Run(CliArgs),
 }
 
@@ -205,48 +153,46 @@ struct CliDynamicToolSpec {
     input_schema: Value,
 }
 
-#[derive(Debug, Error)]
-enum LunaError {
-    #[error("{0}")]
-    Usage(String),
-    #[error("{0}")]
-    Config(String),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error(transparent)]
-    Client(#[from] ClientError),
-    #[error(transparent)]
-    ThreadRun(#[from] ThreadRunError),
-    #[error("failed to parse TOML in {}: {source}", .path.display())]
-    Toml {
-        path: PathBuf,
-        #[source]
-        source: toml::de::Error,
-    },
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit_code) => exit_code,
         Err(LunaError::Usage(message)) => {
-            eprintln!("{message}\n");
-            eprintln!("{USAGE}");
-            ExitCode::FAILURE
+            let error = LunaError::Usage(message);
+            if error.to_string().starts_with("error:") {
+                eprint!("{error}");
+            } else {
+                eprintln!("{} [{}]\n", error, error.code());
+                eprintln!("{}", CliParser::command().render_help());
+            }
+            ExitCode::from(error.exit_code())
         }
         Err(error) => {
-            eprintln!("{APP_NAME}: {error}");
-            ExitCode::FAILURE
+            eprintln!("{APP_NAME} [{}]: {error}", error.code());
+            ExitCode::from(error.exit_code())
         }
     }
 }
 
-async fn run() -> Result<(), LunaError> {
+async fn run() -> Result<ExitCode, LunaError> {
     let command = parse_cli_args(env::args().skip(1))?;
     let cli = match command {
-        ParsedCommand::Help => {
-            print!("{USAGE}");
-            return Ok(());
+        ParsedCommand::Help(help) => {
+            print!("{help}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        ParsedCommand::Version(version) => {
+            print!("{version}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        ParsedCommand::Completions(shell) => {
+            generate(
+                shell,
+                &mut CliParser::command(),
+                APP_NAME,
+                &mut io::stdout(),
+            );
+            return Ok(ExitCode::SUCCESS);
         }
         ParsedCommand::Run(cli) => cli,
     };
@@ -284,13 +230,25 @@ async fn run() -> Result<(), LunaError> {
         sessions_all,
         final_response_only,
         json_output,
+        doctor_live,
         transport_mode,
         prompt_parts,
         no_daemon,
     } = cli;
 
+    let resolved_websocket_url = if transport_mode == TransportMode::WebSocket {
+        let primary_env_url = env::var(CODEX_APP_SERVER_WS_URL_ENV).ok();
+        let legacy_env_url = env::var(CODEX_WEB_SERVER_URL_ENV).ok();
+        resolve_websocket_url(
+            websocket_url.as_deref(),
+            primary_env_url.as_deref(),
+            legacy_env_url.as_deref(),
+        )?
+    } else {
+        ResolvedWebsocketUrl::default()
+    };
+
     if command_kind == CommandKind::Sessions {
-        let websocket_url = websocket_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
         let cwd_filter = if sessions_all {
             None
         } else {
@@ -301,32 +259,48 @@ async fn run() -> Result<(), LunaError> {
             Some(cwd)
         };
         let codex = match transport_mode {
-            TransportMode::WebSocket => connect_ws_codex(&websocket_url, no_daemon).await?,
+            TransportMode::WebSocket => {
+                connect_ws_codex(
+                    &resolved_websocket_url.url,
+                    resolved_websocket_url.manage_daemon() && !no_daemon,
+                )
+                .await?
+            }
             TransportMode::Stdio => spawn_stdio_codex().await?,
         };
         list_sessions(&codex, cwd_filter.as_deref()).await?;
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
-
-    let websocket_url = if transport_mode == TransportMode::WebSocket {
-        let env_websocket_url = env::var(CODEX_WEB_SERVER_URL_ENV).ok();
-        resolve_websocket_url(websocket_url.as_deref(), env_websocket_url.as_deref())?
-    } else {
-        DEFAULT_WS_URL.to_string()
-    };
 
     if command_kind == CommandKind::Start {
-        start_ws_server(&websocket_url).await?;
-        println!("WebSocket server ready at {websocket_url}");
-        return Ok(());
+        start_ws_server(&resolved_websocket_url.url).await?;
+        println!("WebSocket server ready at {}", resolved_websocket_url.url);
+        return Ok(ExitCode::SUCCESS);
     }
 
-    let websocket_url_for_connect = websocket_url.clone();
-    let no_daemon_for_connect = no_daemon;
+    if command_kind == CommandKind::Doctor {
+        let manage_daemon = resolved_websocket_url.manage_daemon() && !no_daemon;
+        let passed = run_doctor(DoctorOptions {
+            json: json_output,
+            live: doctor_live,
+            transport: transport_mode,
+            websocket_url: resolved_websocket_url.url,
+            manage_daemon,
+        })
+        .await?;
+        return Ok(if passed {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
+
+    let websocket_url_for_connect = resolved_websocket_url.url.clone();
+    let manage_daemon_for_connect = resolved_websocket_url.manage_daemon() && !no_daemon;
     let connect_task = tokio::spawn(async move {
         match transport_mode {
             TransportMode::WebSocket => {
-                connect_ws_codex(&websocket_url_for_connect, no_daemon_for_connect).await
+                connect_ws_codex(&websocket_url_for_connect, manage_daemon_for_connect).await
             }
             TransportMode::Stdio => spawn_stdio_codex().await,
         }
@@ -457,9 +431,9 @@ async fn run() -> Result<(), LunaError> {
         turn_options = turn_options.extra(turn_extra);
     }
 
-    let codex = connect_task
-        .await
-        .map_err(|error| LunaError::Config(format!("transport connect task failed: {error}")))??;
+    let codex = connect_task.await.map_err(|error| {
+        LunaError::Transport(format!("transport connect task failed: {error}"))
+    })??;
 
     ensure_authenticated(&codex).await?;
 
@@ -485,7 +459,7 @@ async fn run() -> Result<(), LunaError> {
             !final_response.is_empty(),
             &mut ended_with_newline,
         )?;
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let mut streamed = thread.run_streamed(prompt, turn_options).await?;
@@ -496,7 +470,7 @@ async fn run() -> Result<(), LunaError> {
         stream_text_events(&mut streamed).await?;
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), LunaError> {
@@ -543,10 +517,10 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), LunaError
                 break;
             }
             ThreadEvent::TurnFailed { error } => {
-                return Err(LunaError::Config(format!("turn failed: {}", error.message)));
+                return Err(LunaError::Turn(format!("turn failed: {}", error.message)));
             }
             ThreadEvent::Error { message } => {
-                return Err(LunaError::Config(format!("stream error: {message}")));
+                return Err(LunaError::Turn(format!("stream error: {message}")));
             }
             ThreadEvent::ThreadStarted { .. }
             | ThreadEvent::TurnStarted
@@ -555,7 +529,7 @@ async fn stream_text_events(streamed: &mut StreamedTurn) -> Result<(), LunaError
     }
 
     if !saw_terminal {
-        return Err(LunaError::Config(
+        return Err(LunaError::Turn(
             "stream closed before receiving turn completion".to_string(),
         ));
     }
@@ -608,16 +582,16 @@ async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<(), LunaError
         };
 
         let line = serde_json::to_string(&json_event)
-            .map_err(|err| LunaError::Config(format!("failed to serialize event: {err}")))?;
+            .map_err(|err| LunaError::Protocol(format!("failed to serialize event: {err}")))?;
         writeln!(stdout, "{line}")?;
 
         match event {
             ThreadEvent::TurnCompleted { .. } => break,
             ThreadEvent::TurnFailed { error } => {
-                return Err(LunaError::Config(format!("turn failed: {}", error.message)));
+                return Err(LunaError::Turn(format!("turn failed: {}", error.message)));
             }
             ThreadEvent::Error { message } => {
-                return Err(LunaError::Config(format!("stream error: {message}")));
+                return Err(LunaError::Turn(format!("stream error: {message}")));
             }
             _ => {}
         }
@@ -784,16 +758,16 @@ fn thread_item_to_json(item: &ThreadItem) -> Value {
     }
 }
 
-async fn connect_ws_codex(url: &str, no_daemon: bool) -> Result<Codex, LunaError> {
+async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<Codex, LunaError> {
     let config = WsConfig {
         url: url.to_string(),
         env: Default::default(),
         options: ClientOptions::default(),
     };
-    let client = if no_daemon {
-        CodexClient::connect_ws(config).await?
-    } else {
+    let client = if manage_daemon {
         CodexClient::start_and_connect_ws(config).await?
+    } else {
+        CodexClient::connect_ws(config).await?
     };
     Ok(client.as_api())
 }
@@ -811,7 +785,7 @@ async fn start_ws_server(url: &str) -> Result<(), LunaError> {
 async fn spawn_stdio_codex() -> Result<Codex, LunaError> {
     let codex_binary = resolve_codex_binary()?;
     let stdio_config = StdioConfig {
-        codex_binary,
+        codex_binary: codex_binary.to_string_lossy().into_owned(),
         ..Default::default()
     };
     Ok(Codex::spawn_stdio(stdio_config).await?)
@@ -826,7 +800,7 @@ async fn ensure_authenticated(codex: &Codex) -> Result<(), LunaError> {
     let account = codex
         .account_read(requests::GetAccountParams::default())
         .await?;
-    if account.extra.get("isLoggedIn") == Some(&Value::Bool(true)) {
+    if account_is_authenticated(&account.extra) {
         return Ok(());
     }
 
@@ -851,7 +825,16 @@ async fn ensure_authenticated(codex: &Codex) -> Result<(), LunaError> {
         return Ok(());
     }
 
-    Ok(())
+    Err(LunaError::Authentication(
+        "Codex is not authenticated; run `codex login`, then rerun `luna doctor --live`"
+            .to_string(),
+    ))
+}
+
+fn account_is_authenticated(account: &Map<String, Value>) -> bool {
+    account.get("isLoggedIn") == Some(&Value::Bool(true))
+        || account.get("account").is_some_and(|value| !value.is_null())
+        || account.get("requiresOpenaiAuth") == Some(&Value::Bool(false))
 }
 
 #[derive(Debug)]
@@ -869,7 +852,7 @@ async fn list_sessions(codex: &Codex, cwd_filter: Option<&str>) -> Result<(), Lu
     loop {
         pages_scanned += 1;
         if pages_scanned > MAX_THREAD_LIST_PAGES {
-            return Err(LunaError::Config(format!(
+            return Err(LunaError::Protocol(format!(
                 "could not list sessions after scanning {MAX_THREAD_LIST_PAGES} pages"
             )));
         }
@@ -1134,54 +1117,6 @@ fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn resolve_codex_binary() -> Result<String, LunaError> {
-    resolve_codex_binary_with(|program, args| {
-        Command::new(program)
-            .args(args)
-            .output()
-            .map(|output| CommandResult {
-                success: output.status.success(),
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            })
-    })
-}
-
-#[derive(Debug)]
-struct CommandResult {
-    success: bool,
-    stdout: String,
-}
-
-fn resolve_codex_binary_with<F>(mut run_command: F) -> Result<String, LunaError>
-where
-    F: FnMut(&str, &[&str]) -> io::Result<CommandResult>,
-{
-    let result = run_command("which", &["codex"]).map_err(|error| {
-        LunaError::Config(format!(
-            "failed to resolve codex binary via `which codex`: {error}"
-        ))
-    })?;
-
-    if !result.success {
-        return Err(LunaError::Config(
-            "could not locate `codex` on PATH (which codex returned non-zero status)".to_string(),
-        ));
-    }
-
-    let resolved = result
-        .stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .ok_or_else(|| {
-            LunaError::Config(
-                "could not locate `codex` on PATH (which codex produced empty output)".to_string(),
-            )
-        })?;
-
-    Ok(resolved.to_string())
-}
-
 fn print_chunk<W: Write>(writer: &mut W, chunk: &str) -> Result<(), LunaError> {
     write!(writer, "{chunk}")?;
     writer.flush()?;
@@ -1201,678 +1136,503 @@ fn ensure_message_separator<W: Write>(
     Ok(())
 }
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "luna",
+    version,
+    about = "Opinionated one-shot Codex app-server CLI",
+    disable_help_subcommand = true
+)]
+struct CliParser {
+    #[command(subcommand)]
+    command: CliCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    /// Run one Codex turn from an argument or stdin
+    #[command(alias = "x")]
+    Exec(Box<ExecCliArgs>),
+    /// Reuse or start a loopback WebSocket app-server, then exit
+    Start(StartCliArgs),
+    /// List recorded sessions ordered by last activity
+    Sessions(SessionsCliArgs),
+    /// Diagnose Luna, Codex, authentication, and transport readiness
+    Doctor(DoctorCliArgs),
+    /// Generate a shell completion script
+    Completions(CompletionsCliArgs),
+}
+
+#[derive(Debug, Args)]
+struct TransportCliArgs {
+    /// WebSocket app-server URL
+    #[arg(long, value_name = "URL", conflicts_with = "stdio")]
+    ws_url: Option<String>,
+    /// Connect without managing a local WebSocket daemon
+    #[arg(long)]
+    no_daemon: bool,
+    /// Spawn an app-server over stdio instead of WebSocket
+    #[arg(long, conflicts_with = "ws_url")]
+    stdio: bool,
+}
+
+#[derive(Debug, Args)]
+struct ExecCliArgs {
+    #[command(flatten)]
+    transport: TransportCliArgs,
+    /// Load ~/.codex/config.toml [agents.NAME]
+    #[arg(long, value_name = "NAME")]
+    agent: Option<String>,
+    /// Set the Codex working directory (default: current directory)
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+    /// Override the model (default: gpt-5.6-luna)
+    #[arg(long)]
+    model: Option<String>,
+    /// Override the model provider
+    #[arg(long)]
+    model_provider: Option<String>,
+    /// Override reasoning effort
+    #[arg(long, value_parser = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])]
+    reasoning_effort: Option<String>,
+    /// Override reasoning summary mode
+    #[arg(long, value_parser = ["none", "auto", "concise", "detailed"])]
+    reasoning_summary: Option<String>,
+    /// Set model verbosity through Codex config
+    #[arg(long, value_parser = ["low", "medium", "high"])]
+    model_verbosity: Option<String>,
+    /// Set a Codex config profile override
+    #[arg(long)]
+    config_profile: Option<String>,
+    /// Set the approval policy
+    #[arg(long, value_parser = ["never", "on-request", "on-failure", "untrusted"])]
+    approval_policy: Option<String>,
+    /// Set the sandbox mode
+    #[arg(long, value_parser = ["read-only", "workspace-write", "danger-full-access"])]
+    sandbox: Option<String>,
+    /// Set a raw sandbox policy JSON payload
+    #[arg(long)]
+    sandbox_policy_json: Option<String>,
+    /// Enable workspace-write network access
+    #[arg(long, conflicts_with = "sandbox_network_access_disabled")]
+    sandbox_network_access_enabled: bool,
+    /// Disable workspace-write network access
+    #[arg(long, conflicts_with = "sandbox_network_access_enabled")]
+    sandbox_network_access_disabled: bool,
+    /// Add a workspace-write writable root (repeatable)
+    #[arg(long, value_name = "PATH")]
+    sandbox_writable_root: Vec<String>,
+    /// Set web search mode
+    #[arg(long, value_parser = ["disabled", "cached", "live"])]
+    web_search_mode: Option<String>,
+    /// Set thread/start dynamicTools as a JSON array
+    #[arg(long)]
+    dynamic_tools_json: Option<String>,
+    /// Set model personality
+    #[arg(long, value_parser = ["none", "friendly", "pragmatic"])]
+    personality: Option<String>,
+    /// Set base instructions
+    #[arg(long)]
+    base_instructions: Option<String>,
+    /// Set developer instructions (overrides --agent instructions)
+    #[arg(long)]
+    developer_instructions: Option<String>,
+    /// Run without persisting session files
+    #[arg(long)]
+    ephemeral: bool,
+    /// Enable raw response item events
+    #[arg(long)]
+    experimental_raw_events: bool,
+    /// Persist extended history for resume/fork/read
+    #[arg(long)]
+    persist_extended_history: bool,
+    /// Resume the most recent recorded session
+    #[arg(short = 'c', long = "continue", conflicts_with = "resume")]
+    continue_last: bool,
+    /// Resume a specific session ID
+    #[arg(short = 'r', long, value_name = "ID", conflicts_with = "continue_last")]
+    resume: Option<String>,
+    /// Set a Codex config override (repeatable)
+    #[arg(long, value_name = "KEY=VALUE")]
+    config: Vec<String>,
+    /// Merge a JSON object into thread config
+    #[arg(long)]
+    config_json: Option<String>,
+    /// Set the turn output schema as JSON
+    #[arg(long)]
+    output_schema_json: Option<String>,
+    /// Load the turn output schema from a file
+    #[arg(
+        long,
+        visible_alias = "output-schema",
+        conflicts_with = "output_schema_json"
+    )]
+    output_schema_file: Option<String>,
+    /// Merge a JSON object into raw turn/start extras
+    #[arg(long)]
+    turn_extra_json: Option<String>,
+    /// Print only the final agent message
+    #[arg(long, conflicts_with = "json")]
+    final_response: bool,
+    /// Print turn events as JSONL
+    #[arg(long, conflicts_with = "final_response")]
+    json: bool,
+    /// Prompt text; read from stdin when omitted
+    #[arg(value_name = "PROMPT")]
+    prompt: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct StartCliArgs {
+    /// Loopback WebSocket URL to reuse or start
+    #[arg(long, value_name = "URL")]
+    ws_url: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct SessionsCliArgs {
+    #[command(flatten)]
+    transport: TransportCliArgs,
+    /// Include sessions from every working directory
+    #[arg(long)]
+    all: bool,
+    /// Filter sessions to this working directory
+    #[arg(long, value_name = "PATH")]
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct DoctorCliArgs {
+    #[command(flatten)]
+    transport: TransportCliArgs,
+    /// Print grouped human-readable checks (default)
+    #[arg(long, conflicts_with = "json")]
+    summary: bool,
+    /// Print a versioned redacted JSON report
+    #[arg(long, conflicts_with = "summary")]
+    json: bool,
+    /// Run upstream network diagnostics and app-server readiness checks
+    #[arg(long)]
+    live: bool,
+    /// Disable color (doctor output is currently plain by default)
+    #[arg(long)]
+    no_color: bool,
+    /// Use ASCII labels (doctor output is currently ASCII by default)
+    #[arg(long)]
+    ascii: bool,
+}
+
+#[derive(Debug, Args)]
+struct CompletionsCliArgs {
+    /// Shell to generate completions for
+    shell: Shell,
+}
+
 fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedCommand, LunaError> {
-    let mut command_kind: Option<CommandKind> = None;
-    let mut agent: Option<String> = None;
-    let mut working_directory: Option<String> = None;
-    let mut websocket_url: Option<String> = None;
-    let mut model: Option<String> = None;
-    let mut model_provider: Option<String> = None;
-    let mut reasoning_effort: Option<ModelReasoningEffort> = None;
-    let mut reasoning_summary: Option<ModelReasoningSummary> = None;
-    let mut model_verbosity: Option<ModelVerbosity> = None;
-    let mut config_profile: Option<String> = None;
-    let mut approval_policy: Option<ApprovalMode> = None;
-    let mut sandbox_mode: Option<SandboxMode> = None;
-    let mut sandbox_policy_json: Option<String> = None;
-    let mut sandbox_network_access_enabled: Option<bool> = None;
-    let mut sandbox_writable_roots = Vec::new();
-    let mut web_search_mode: Option<WebSearchMode> = None;
-    let mut dynamic_tools_json: Option<String> = None;
-    let mut personality: Option<Personality> = None;
-    let mut base_instructions: Option<String> = None;
-    let mut developer_instructions: Option<String> = None;
-    let mut ephemeral: Option<bool> = None;
-    let mut experimental_raw_events: Option<bool> = None;
-    let mut persist_extended_history: Option<bool> = None;
-    let mut config_entries = Vec::new();
-    let mut config_json: Option<String> = None;
-    let mut output_schema_json: Option<String> = None;
-    let mut output_schema_file: Option<String> = None;
-    let mut turn_extra_json: Option<String> = None;
-    let mut resume_target: Option<ResumeTarget> = None;
-    let mut sessions = false;
-    let mut sessions_all = false;
-    let mut final_response_only = false;
-    let mut json_output = false;
-    let mut no_daemon = false;
-    let mut transport_mode = TransportMode::WebSocket;
-    let mut prompt_parts = Vec::new();
-    let mut parse_options = true;
-    let mut iter = args.into_iter();
-
-    while let Some(arg) = iter.next() {
-        if parse_options {
-            if arg == "--" {
-                parse_options = false;
-                continue;
-            }
-            if arg == "--help" || arg == "-h" {
-                return Ok(ParsedCommand::Help);
-            }
-            if command_kind.is_none() && (arg == "exec" || arg == "x") {
-                set_command_kind(&mut command_kind, CommandKind::Exec)?;
-                continue;
-            }
-            if command_kind.is_none() && arg == "start" {
-                set_command_kind(&mut command_kind, CommandKind::Start)?;
-                continue;
-            }
-            if (command_kind.is_none() && arg == "sessions") || arg == "--sessions" {
-                set_command_kind(&mut command_kind, CommandKind::Sessions)?;
-                sessions = true;
-                continue;
-            }
-            if arg == "--all" {
-                if sessions_all {
-                    return Err(LunaError::Usage(
-                        "--all may only be provided once".to_string(),
-                    ));
+    let args = normalize_legacy_cli_args(args.into_iter().collect())?;
+    let parsed = match CliParser::try_parse_from(std::iter::once(APP_NAME.to_string()).chain(args))
+    {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return match error.kind() {
+                clap::error::ErrorKind::DisplayHelp => Ok(ParsedCommand::Help(error.to_string())),
+                clap::error::ErrorKind::DisplayVersion => {
+                    Ok(ParsedCommand::Version(error.to_string()))
                 }
-                sessions_all = true;
-                continue;
-            }
-            if arg == "-c" || arg == "--continue" {
-                set_resume_target(&mut resume_target, ResumeTarget::Last)?;
-                continue;
-            }
-            if arg == "-r" || arg == "--resume" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --resume".to_string()))?;
-                set_resume_target(
-                    &mut resume_target,
-                    ResumeTarget::SessionId(normalize_session_id(&raw)?),
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--resume=") {
-                set_resume_target(
-                    &mut resume_target,
-                    ResumeTarget::SessionId(normalize_session_id(raw)?),
-                )?;
-                continue;
-            }
-            if arg == "--agent" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --agent".to_string()))?;
-                if agent.is_some() {
-                    return Err(LunaError::Usage(
-                        "--agent may only be provided once".to_string(),
-                    ));
-                }
-                agent = Some(normalize_agent_name(&raw)?);
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--agent=") {
-                if agent.is_some() {
-                    return Err(LunaError::Usage(
-                        "--agent may only be provided once".to_string(),
-                    ));
-                }
-                agent = Some(normalize_agent_name(raw)?);
-                continue;
-            }
-            if arg == "--cwd" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --cwd".to_string()))?;
-                set_working_directory(&mut working_directory, &raw)?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--cwd=") {
-                set_working_directory(&mut working_directory, raw)?;
-                continue;
-            }
-            if arg == "--ws-url" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --ws-url".to_string()))?;
-                set_string_option_once(&mut websocket_url, &raw, "--ws-url")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--ws-url=") {
-                set_string_option_once(&mut websocket_url, raw, "--ws-url")?;
-                continue;
-            }
-            if arg == "--model" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --model".to_string()))?;
-                set_string_option_once(&mut model, &raw, "--model")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--model=") {
-                set_string_option_once(&mut model, raw, "--model")?;
-                continue;
-            }
-            if arg == "--model-provider" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --model-provider".to_string())
-                })?;
-                set_string_option_once(&mut model_provider, &raw, "--model-provider")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--model-provider=") {
-                set_string_option_once(&mut model_provider, raw, "--model-provider")?;
-                continue;
-            }
-            if arg == "--reasoning-effort" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --reasoning-effort".to_string())
-                })?;
-                set_option_once(
-                    &mut reasoning_effort,
-                    parse_reasoning_effort(&raw)?,
-                    "--reasoning-effort",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--reasoning-effort=") {
-                set_option_once(
-                    &mut reasoning_effort,
-                    parse_reasoning_effort(raw)?,
-                    "--reasoning-effort",
-                )?;
-                continue;
-            }
-            if arg == "--reasoning-summary" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --reasoning-summary".to_string())
-                })?;
-                set_option_once(
-                    &mut reasoning_summary,
-                    parse_reasoning_summary(&raw)?,
-                    "--reasoning-summary",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--reasoning-summary=") {
-                set_option_once(
-                    &mut reasoning_summary,
-                    parse_reasoning_summary(raw)?,
-                    "--reasoning-summary",
-                )?;
-                continue;
-            }
-            if arg == "--model-verbosity" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --model-verbosity".to_string())
-                })?;
-                set_option_once(
-                    &mut model_verbosity,
-                    parse_model_verbosity(&raw)?,
-                    "--model-verbosity",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--model-verbosity=") {
-                set_option_once(
-                    &mut model_verbosity,
-                    parse_model_verbosity(raw)?,
-                    "--model-verbosity",
-                )?;
-                continue;
-            }
-            if arg == "--config-profile" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --config-profile".to_string())
-                })?;
-                set_string_option_once(&mut config_profile, &raw, "--config-profile")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--config-profile=") {
-                set_string_option_once(&mut config_profile, raw, "--config-profile")?;
-                continue;
-            }
-            if arg == "--approval-policy" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --approval-policy".to_string())
-                })?;
-                set_option_once(
-                    &mut approval_policy,
-                    parse_approval_mode(&raw)?,
-                    "--approval-policy",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--approval-policy=") {
-                set_option_once(
-                    &mut approval_policy,
-                    parse_approval_mode(raw)?,
-                    "--approval-policy",
-                )?;
-                continue;
-            }
-            if arg == "--sandbox" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --sandbox".to_string()))?;
-                set_option_once(&mut sandbox_mode, parse_sandbox_mode(&raw)?, "--sandbox")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--sandbox=") {
-                set_option_once(&mut sandbox_mode, parse_sandbox_mode(raw)?, "--sandbox")?;
-                continue;
-            }
-            if arg == "--sandbox-policy-json" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --sandbox-policy-json".to_string())
-                })?;
-                set_string_option_once(&mut sandbox_policy_json, &raw, "--sandbox-policy-json")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--sandbox-policy-json=") {
-                set_string_option_once(&mut sandbox_policy_json, raw, "--sandbox-policy-json")?;
-                continue;
-            }
-            if arg == "--sandbox-network-access-enabled" {
-                set_option_once(
-                    &mut sandbox_network_access_enabled,
-                    true,
-                    "--sandbox-network-access-enabled/--sandbox-network-access-disabled",
-                )?;
-                continue;
-            }
-            if arg == "--sandbox-network-access-disabled" {
-                set_option_once(
-                    &mut sandbox_network_access_enabled,
-                    false,
-                    "--sandbox-network-access-enabled/--sandbox-network-access-disabled",
-                )?;
-                continue;
-            }
-            if arg == "--sandbox-writable-root" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --sandbox-writable-root".to_string())
-                })?;
-                sandbox_writable_roots.push(normalize_working_directory(&raw)?);
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--sandbox-writable-root=") {
-                sandbox_writable_roots.push(normalize_working_directory(raw)?);
-                continue;
-            }
-            if arg == "--web-search-mode" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --web-search-mode".to_string())
-                })?;
-                set_option_once(
-                    &mut web_search_mode,
-                    parse_web_search_mode(&raw)?,
-                    "--web-search-mode",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--web-search-mode=") {
-                set_option_once(
-                    &mut web_search_mode,
-                    parse_web_search_mode(raw)?,
-                    "--web-search-mode",
-                )?;
-                continue;
-            }
-            if arg == "--dynamic-tools-json" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --dynamic-tools-json".to_string())
-                })?;
-                set_string_option_once(&mut dynamic_tools_json, &raw, "--dynamic-tools-json")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--dynamic-tools-json=") {
-                set_string_option_once(&mut dynamic_tools_json, raw, "--dynamic-tools-json")?;
-                continue;
-            }
-            if arg == "--personality" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --personality".to_string())
-                })?;
-                set_option_once(&mut personality, parse_personality(&raw)?, "--personality")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--personality=") {
-                set_option_once(&mut personality, parse_personality(raw)?, "--personality")?;
-                continue;
-            }
-            if arg == "--base-instructions" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --base-instructions".to_string())
-                })?;
-                set_string_option_once(&mut base_instructions, &raw, "--base-instructions")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--base-instructions=") {
-                set_string_option_once(&mut base_instructions, raw, "--base-instructions")?;
-                continue;
-            }
-            if arg == "--developer-instructions" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --developer-instructions".to_string())
-                })?;
-                set_string_option_once(
-                    &mut developer_instructions,
-                    &raw,
-                    "--developer-instructions",
-                )?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--developer-instructions=") {
-                set_string_option_once(
-                    &mut developer_instructions,
-                    raw,
-                    "--developer-instructions",
-                )?;
-                continue;
-            }
-            if arg == "--ephemeral" {
-                set_option_once(&mut ephemeral, true, "--ephemeral")?;
-                continue;
-            }
-            if arg == "--experimental-raw-events" {
-                set_option_once(
-                    &mut experimental_raw_events,
-                    true,
-                    "--experimental-raw-events",
-                )?;
-                continue;
-            }
-            if arg == "--persist-extended-history" {
-                set_option_once(
-                    &mut persist_extended_history,
-                    true,
-                    "--persist-extended-history",
-                )?;
-                continue;
-            }
-            if arg == "--config" {
-                let raw = iter
-                    .next()
-                    .ok_or_else(|| LunaError::Usage("missing value for --config".to_string()))?;
-                config_entries.push(raw);
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--config=") {
-                config_entries.push(raw.to_string());
-                continue;
-            }
-            if arg == "--config-json" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --config-json".to_string())
-                })?;
-                set_string_option_once(&mut config_json, &raw, "--config-json")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--config-json=") {
-                set_string_option_once(&mut config_json, raw, "--config-json")?;
-                continue;
-            }
-            if arg == "--output-schema-json" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --output-schema-json".to_string())
-                })?;
-                set_string_option_once(&mut output_schema_json, &raw, "--output-schema-json")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--output-schema-json=") {
-                set_string_option_once(&mut output_schema_json, raw, "--output-schema-json")?;
-                continue;
-            }
-            if arg == "--output-schema-file" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --output-schema-file".to_string())
-                })?;
-                set_string_option_once(&mut output_schema_file, &raw, "--output-schema-file")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--output-schema-file=") {
-                set_string_option_once(&mut output_schema_file, raw, "--output-schema-file")?;
-                continue;
-            }
-            if arg == "--output-schema" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --output-schema".to_string())
-                })?;
-                set_string_option_once(&mut output_schema_file, &raw, "--output-schema")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--output-schema=") {
-                set_string_option_once(&mut output_schema_file, raw, "--output-schema")?;
-                continue;
-            }
-            if arg == "--turn-extra-json" {
-                let raw = iter.next().ok_or_else(|| {
-                    LunaError::Usage("missing value for --turn-extra-json".to_string())
-                })?;
-                set_string_option_once(&mut turn_extra_json, &raw, "--turn-extra-json")?;
-                continue;
-            }
-            if let Some(raw) = arg.strip_prefix("--turn-extra-json=") {
-                set_string_option_once(&mut turn_extra_json, raw, "--turn-extra-json")?;
-                continue;
-            }
-            if arg == "--final-response" {
-                if final_response_only {
-                    return Err(LunaError::Usage(
-                        "--final-response may only be provided once".to_string(),
-                    ));
-                }
-                final_response_only = true;
-                continue;
-            }
-            if arg == "--json" {
-                if json_output {
-                    return Err(LunaError::Usage(
-                        "--json may only be provided once".to_string(),
-                    ));
-                }
-                json_output = true;
-                continue;
-            }
-            if arg == "--no-daemon" {
-                no_daemon = true;
-                continue;
-            }
-            if arg == "--stdio" {
-                if transport_mode == TransportMode::Stdio {
-                    return Err(LunaError::Usage(
-                        "--stdio may only be provided once".to_string(),
-                    ));
-                }
-                transport_mode = TransportMode::Stdio;
-                continue;
-            }
-            if arg.starts_with('-') {
-                return Err(LunaError::Usage(format!("unknown option: {arg}")));
-            }
+                _ => Err(LunaError::Usage(error.to_string())),
+            };
         }
+    };
 
-        match command_kind {
-            Some(CommandKind::Exec) => prompt_parts.push(arg),
-            Some(CommandKind::Start) => {
+    match parsed.command {
+        CliCommand::Exec(args) => Ok(ParsedCommand::Run(exec_cli_args(*args)?)),
+        CliCommand::Start(args) => Ok(ParsedCommand::Run(start_cli_args(args)?)),
+        CliCommand::Sessions(args) => Ok(ParsedCommand::Run(sessions_cli_args(args)?)),
+        CliCommand::Doctor(args) => Ok(ParsedCommand::Run(doctor_cli_args(args)?)),
+        CliCommand::Completions(args) => Ok(ParsedCommand::Completions(args.shell)),
+    }
+}
+
+fn normalize_legacy_cli_args(mut args: Vec<String>) -> Result<Vec<String>, LunaError> {
+    let sessions_positions: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter_map(|(index, arg)| (arg == "--sessions").then_some(index))
+        .collect();
+    match sessions_positions.as_slice() {
+        [] => {}
+        [position] => {
+            let position = *position;
+            args.remove(position);
+            if args.iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "exec" | "x" | "start" | "sessions" | "doctor" | "completions"
+                )
+            }) {
                 return Err(LunaError::Usage(
-                    "start does not accept prompt arguments".to_string(),
+                    "--sessions cannot be combined with another command".to_string(),
                 ));
             }
-            Some(CommandKind::Sessions) => {
-                return Err(LunaError::Usage(
-                    "sessions does not accept prompt arguments".to_string(),
-                ));
-            }
-            None => {
-                return Err(LunaError::Usage(
-                    "missing command; expected one of: exec, start, sessions".to_string(),
-                ));
-            }
+            args.insert(0, "sessions".to_string());
+        }
+        _ => {
+            return Err(LunaError::Usage(
+                "--sessions may only be provided once".to_string(),
+            ));
         }
     }
+    Ok(args)
+}
 
-    let command_kind = command_kind.ok_or_else(|| {
-        LunaError::Usage("missing command; expected one of: exec, start, sessions".to_string())
-    })?;
+fn exec_cli_args(args: ExecCliArgs) -> Result<CliArgs, LunaError> {
+    let transport_mode = transport_mode(args.transport.stdio);
+    let mut cli = empty_cli_args(CommandKind::Exec, transport_mode);
+    cli.no_daemon = args.transport.no_daemon;
+    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    cli.agent = args
+        .agent
+        .as_deref()
+        .map(normalize_agent_name)
+        .transpose()?;
+    cli.working_directory = args
+        .cwd
+        .as_deref()
+        .map(normalize_working_directory)
+        .transpose()?;
+    cli.model = normalize_optional_string(args.model, "--model")?;
+    cli.model_provider = normalize_optional_string(args.model_provider, "--model-provider")?;
+    cli.reasoning_effort = args
+        .reasoning_effort
+        .as_deref()
+        .map(parse_reasoning_effort)
+        .transpose()?;
+    cli.reasoning_summary = args
+        .reasoning_summary
+        .as_deref()
+        .map(parse_reasoning_summary)
+        .transpose()?;
+    cli.model_verbosity = args
+        .model_verbosity
+        .as_deref()
+        .map(parse_model_verbosity)
+        .transpose()?;
+    cli.config_profile = normalize_optional_string(args.config_profile, "--config-profile")?;
+    cli.approval_policy = args
+        .approval_policy
+        .as_deref()
+        .map(parse_approval_mode)
+        .transpose()?;
+    cli.sandbox_mode = args
+        .sandbox
+        .as_deref()
+        .map(parse_sandbox_mode)
+        .transpose()?;
+    cli.sandbox_policy_json =
+        normalize_optional_string(args.sandbox_policy_json, "--sandbox-policy-json")?;
+    cli.sandbox_network_access_enabled = match (
+        args.sandbox_network_access_enabled,
+        args.sandbox_network_access_disabled,
+    ) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        _ => None,
+    };
+    cli.sandbox_writable_roots = args
+        .sandbox_writable_root
+        .iter()
+        .map(|root| normalize_working_directory(root))
+        .collect::<Result<Vec<_>, _>>()?;
+    cli.web_search_mode = args
+        .web_search_mode
+        .as_deref()
+        .map(parse_web_search_mode)
+        .transpose()?;
+    cli.dynamic_tools_json =
+        normalize_optional_string(args.dynamic_tools_json, "--dynamic-tools-json")?;
+    cli.personality = args
+        .personality
+        .as_deref()
+        .map(parse_personality)
+        .transpose()?;
+    cli.base_instructions =
+        normalize_optional_string(args.base_instructions, "--base-instructions")?;
+    cli.developer_instructions =
+        normalize_optional_string(args.developer_instructions, "--developer-instructions")?;
+    cli.ephemeral = args.ephemeral.then_some(true);
+    cli.experimental_raw_events = args.experimental_raw_events.then_some(true);
+    cli.persist_extended_history = args.persist_extended_history.then_some(true);
+    cli.config_entries = args.config;
+    cli.config_json = normalize_optional_string(args.config_json, "--config-json")?;
+    cli.output_schema_json =
+        normalize_optional_string(args.output_schema_json, "--output-schema-json")?;
+    cli.output_schema_file =
+        normalize_optional_string(args.output_schema_file, "--output-schema-file")?;
+    cli.turn_extra_json = normalize_optional_string(args.turn_extra_json, "--turn-extra-json")?;
+    cli.resume_target = if args.continue_last {
+        Some(ResumeTarget::Last)
+    } else {
+        args.resume
+            .as_deref()
+            .map(normalize_session_id)
+            .transpose()?
+            .map(ResumeTarget::SessionId)
+    };
+    cli.final_response_only = args.final_response;
+    cli.json_output = args.json;
+    cli.prompt_parts = args.prompt;
+    Ok(cli)
+}
 
-    if transport_mode == TransportMode::Stdio && websocket_url.is_some() {
-        return Err(LunaError::Usage(
-            "--ws-url cannot be used with --stdio".to_string(),
-        ));
+fn start_cli_args(args: StartCliArgs) -> Result<CliArgs, LunaError> {
+    let mut cli = empty_cli_args(CommandKind::Start, TransportMode::WebSocket);
+    cli.websocket_url = normalize_optional_string(args.ws_url, "--ws-url")?;
+    Ok(cli)
+}
+
+fn sessions_cli_args(args: SessionsCliArgs) -> Result<CliArgs, LunaError> {
+    let mut cli = empty_cli_args(CommandKind::Sessions, transport_mode(args.transport.stdio));
+    cli.no_daemon = args.transport.no_daemon;
+    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    cli.working_directory = args
+        .cwd
+        .as_deref()
+        .map(normalize_working_directory)
+        .transpose()?;
+    cli.sessions_all = args.all;
+    Ok(cli)
+}
+
+fn doctor_cli_args(args: DoctorCliArgs) -> Result<CliArgs, LunaError> {
+    let mut cli = empty_cli_args(CommandKind::Doctor, transport_mode(args.transport.stdio));
+    cli.no_daemon = args.transport.no_daemon;
+    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    cli.json_output = args.json;
+    cli.doctor_live = args.live;
+    let _ = (args.summary, args.no_color, args.ascii);
+    Ok(cli)
+}
+
+fn transport_mode(stdio: bool) -> TransportMode {
+    if stdio {
+        TransportMode::Stdio
+    } else {
+        TransportMode::WebSocket
     }
+}
 
-    if sessions_all && command_kind != CommandKind::Sessions {
-        return Err(LunaError::Usage(
-            "--all can only be used with the sessions command".to_string(),
-        ));
-    }
-
-    match command_kind {
-        CommandKind::Exec => {}
-        CommandKind::Sessions => {
-            if resume_target.is_some() {
-                return Err(LunaError::Usage(
-                    "sessions cannot be used with --continue or --resume".to_string(),
-                ));
+fn normalize_optional_string(
+    value: Option<String>,
+    flag: &str,
+) -> Result<Option<String>, LunaError> {
+    value
+        .map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                Err(LunaError::Usage(format!(
+                    "value for {flag} cannot be empty"
+                )))
+            } else {
+                Ok(trimmed.to_string())
             }
-            if final_response_only {
-                return Err(LunaError::Usage(
-                    "sessions cannot be used with --final-response".to_string(),
-                ));
-            }
-        }
-        CommandKind::Start => {
-            if transport_mode == TransportMode::Stdio {
-                return Err(LunaError::Usage(
-                    "start cannot be used with --stdio".to_string(),
-                ));
-            }
-            if no_daemon {
-                return Err(LunaError::Usage(
-                    "start cannot be used with --no-daemon".to_string(),
-                ));
-            }
-            if agent.is_some()
-                || working_directory.is_some()
-                || model.is_some()
-                || model_provider.is_some()
-                || reasoning_effort.is_some()
-                || reasoning_summary.is_some()
-                || model_verbosity.is_some()
-                || config_profile.is_some()
-                || approval_policy.is_some()
-                || sandbox_mode.is_some()
-                || sandbox_policy_json.is_some()
-                || sandbox_network_access_enabled.is_some()
-                || !sandbox_writable_roots.is_empty()
-                || web_search_mode.is_some()
-                || dynamic_tools_json.is_some()
-                || personality.is_some()
-                || base_instructions.is_some()
-                || developer_instructions.is_some()
-                || ephemeral.is_some()
-                || experimental_raw_events.is_some()
-                || persist_extended_history.is_some()
-                || !config_entries.is_empty()
-                || config_json.is_some()
-                || output_schema_json.is_some()
-                || output_schema_file.is_some()
-                || turn_extra_json.is_some()
-                || resume_target.is_some()
-                || final_response_only
-                || json_output
-            {
-                return Err(LunaError::Usage(
-                    "start only supports websocket startup options such as --ws-url".to_string(),
-                ));
-            }
-        }
-    }
+        })
+        .transpose()
+}
 
-    if output_schema_json.is_some() && output_schema_file.is_some() {
-        return Err(LunaError::Usage(
-            "only one of --output-schema-json, --output-schema-file, and --output-schema may be provided".to_string(),
-        ));
-    }
-
-    if json_output && final_response_only {
-        return Err(LunaError::Usage(
-            "--json cannot be used with --final-response".to_string(),
-        ));
-    }
-
-    if sessions && json_output {
-        return Err(LunaError::Usage(
-            "sessions cannot be used with --json".to_string(),
-        ));
-    }
-
-    Ok(ParsedCommand::Run(CliArgs {
+fn empty_cli_args(command_kind: CommandKind, transport_mode: TransportMode) -> CliArgs {
+    CliArgs {
         command_kind,
-        no_daemon,
-        agent,
-        working_directory,
-        websocket_url,
-        model,
-        model_provider,
-        reasoning_effort,
-        reasoning_summary,
-        model_verbosity,
-        config_profile,
-        approval_policy,
-        sandbox_mode,
-        sandbox_policy_json,
-        sandbox_network_access_enabled,
-        sandbox_writable_roots,
-        web_search_mode,
-        dynamic_tools_json,
-        personality,
-        base_instructions,
-        developer_instructions,
-        ephemeral,
-        experimental_raw_events,
-        persist_extended_history,
-        config_entries,
-        config_json,
-        output_schema_json,
-        output_schema_file,
-        turn_extra_json,
-        resume_target,
-        sessions_all,
-        final_response_only,
-        json_output,
+        no_daemon: false,
+        agent: None,
+        working_directory: None,
+        websocket_url: None,
+        model: None,
+        model_provider: None,
+        reasoning_effort: None,
+        reasoning_summary: None,
+        model_verbosity: None,
+        config_profile: None,
+        approval_policy: None,
+        sandbox_mode: None,
+        sandbox_policy_json: None,
+        sandbox_network_access_enabled: None,
+        sandbox_writable_roots: Vec::new(),
+        web_search_mode: None,
+        dynamic_tools_json: None,
+        personality: None,
+        base_instructions: None,
+        developer_instructions: None,
+        ephemeral: None,
+        experimental_raw_events: None,
+        persist_extended_history: None,
+        config_entries: Vec::new(),
+        config_json: None,
+        output_schema_json: None,
+        output_schema_file: None,
+        turn_extra_json: None,
+        resume_target: None,
+        sessions_all: false,
+        final_response_only: false,
+        json_output: false,
+        doctor_live: false,
         transport_mode,
-        prompt_parts,
-    }))
+        prompt_parts: Vec::new(),
+    }
 }
 
-fn set_working_directory(slot: &mut Option<String>, raw: &str) -> Result<(), LunaError> {
-    if slot.is_some() {
-        return Err(LunaError::Usage(
-            "--cwd may only be provided once".to_string(),
-        ));
-    }
-    *slot = Some(normalize_working_directory(raw)?);
-    Ok(())
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebsocketUrlSource {
+    Flag,
+    Environment,
+    LegacyEnvironment,
+    Default,
 }
 
-fn set_command_kind(slot: &mut Option<CommandKind>, value: CommandKind) -> Result<(), LunaError> {
-    if slot.is_some() {
-        return Err(LunaError::Usage(
-            "only one command may be provided".to_string(),
-        ));
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedWebsocketUrl {
+    url: String,
+    source: WebsocketUrlSource,
+}
+
+impl ResolvedWebsocketUrl {
+    fn manage_daemon(&self) -> bool {
+        self.source == WebsocketUrlSource::Default
     }
-    *slot = Some(value);
-    Ok(())
+}
+
+impl Default for ResolvedWebsocketUrl {
+    fn default() -> Self {
+        Self {
+            url: DEFAULT_WS_URL.to_string(),
+            source: WebsocketUrlSource::Default,
+        }
+    }
 }
 
 fn resolve_websocket_url(
     explicit: Option<&str>,
     env_websocket_url: Option<&str>,
-) -> Result<String, LunaError> {
+    legacy_env_websocket_url: Option<&str>,
+) -> Result<ResolvedWebsocketUrl, LunaError> {
     if let Some(url) = explicit {
-        return normalize_websocket_url(url, "--ws-url");
+        return Ok(ResolvedWebsocketUrl {
+            url: normalize_websocket_url(url, "--ws-url")?,
+            source: WebsocketUrlSource::Flag,
+        });
     }
     if let Some(url) = env_websocket_url {
-        return normalize_websocket_url(url, CODEX_WEB_SERVER_URL_ENV);
+        return Ok(ResolvedWebsocketUrl {
+            url: normalize_websocket_url(url, CODEX_APP_SERVER_WS_URL_ENV)?,
+            source: WebsocketUrlSource::Environment,
+        });
     }
-    Ok(DEFAULT_WS_URL.to_string())
+    if let Some(url) = legacy_env_websocket_url {
+        return Ok(ResolvedWebsocketUrl {
+            url: normalize_websocket_url(url, CODEX_WEB_SERVER_URL_ENV)?,
+            source: WebsocketUrlSource::LegacyEnvironment,
+        });
+    }
+    Ok(ResolvedWebsocketUrl::default())
 }
 
 fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, LunaError> {
@@ -1883,43 +1643,6 @@ fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, LunaError>
         )));
     }
     Ok(value.to_string())
-}
-
-fn set_resume_target(
-    slot: &mut Option<ResumeTarget>,
-    target: ResumeTarget,
-) -> Result<(), LunaError> {
-    if slot.is_some() {
-        return Err(LunaError::Usage(
-            "only one of --continue and --resume may be provided".to_string(),
-        ));
-    }
-    *slot = Some(target);
-    Ok(())
-}
-
-fn set_option_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), LunaError> {
-    if slot.is_some() {
-        return Err(LunaError::Usage(format!(
-            "{flag} may only be provided once"
-        )));
-    }
-    *slot = Some(value);
-    Ok(())
-}
-
-fn set_string_option_once(
-    slot: &mut Option<String>,
-    raw: &str,
-    flag: &str,
-) -> Result<(), LunaError> {
-    let value = raw.trim();
-    if value.is_empty() {
-        return Err(LunaError::Usage(format!(
-            "value for {flag} cannot be empty"
-        )));
-    }
-    set_option_once(slot, value.to_string(), flag)
 }
 
 fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, LunaError> {
@@ -2105,40 +1828,53 @@ fn build_thread_config(
 
         let parsed = serde_json::from_str::<Value>(value)
             .unwrap_or_else(|_| Value::String(value.to_string()));
-        config.insert(key.to_string(), parsed);
+        insert_thread_config(&mut config, key, parsed, "--config")?;
     }
 
     if let Some(mode) = web_search_mode {
-        config.insert(
-            "web_search".to_string(),
+        insert_thread_config(
+            &mut config,
+            "web_search",
             Value::String(web_search_mode_as_str(mode).to_string()),
-        );
+            "--web-search-mode",
+        )?;
     }
     if let Some(profile) = config_profile {
-        config.insert("profile".to_string(), Value::String(profile));
+        insert_thread_config(
+            &mut config,
+            "profile",
+            Value::String(profile),
+            "--config-profile",
+        )?;
     }
     if let Some(verbosity) = model_verbosity {
-        config.insert(
-            "model_verbosity".to_string(),
+        insert_thread_config(
+            &mut config,
+            "model_verbosity",
             Value::String(verbosity.as_str().to_string()),
-        );
+            "--model-verbosity",
+        )?;
     }
     if let Some(enabled) = sandbox_network_access_enabled {
-        config.insert(
-            "sandbox_workspace_write.network_access".to_string(),
+        insert_thread_config(
+            &mut config,
+            "sandbox_workspace_write.network_access",
             Value::Bool(enabled),
-        );
+            "--sandbox-network-access-enabled/--sandbox-network-access-disabled",
+        )?;
     }
     if !sandbox_writable_roots.is_empty() {
-        config.insert(
-            "sandbox_workspace_write.writable_roots".to_string(),
+        insert_thread_config(
+            &mut config,
+            "sandbox_workspace_write.writable_roots",
             Value::Array(
                 sandbox_writable_roots
                     .into_iter()
                     .map(Value::String)
                     .collect(),
             ),
-        );
+            "--sandbox-writable-root",
+        )?;
     }
 
     if config.is_empty() {
@@ -2146,6 +1882,24 @@ fn build_thread_config(
     } else {
         Ok(Some(config))
     }
+}
+
+fn insert_thread_config(
+    config: &mut Map<String, Value>,
+    key: &str,
+    value: Value,
+    source: &str,
+) -> Result<(), LunaError> {
+    if let Some(existing) = config.get(key) {
+        if existing == &value {
+            return Ok(());
+        }
+        return Err(LunaError::Usage(format!(
+            "conflicting configuration sources for '{key}'; {source} would replace an existing value"
+        )));
+    }
+    config.insert(key.to_string(), value);
+    Ok(())
 }
 
 fn resolve_output_schema(
@@ -2777,23 +2531,80 @@ mod tests {
 
     #[test]
     fn resolve_websocket_url_prefers_explicit_value() {
-        let resolved =
-            resolve_websocket_url(Some("ws://127.0.0.1:5555"), Some("ws://127.0.0.1:4444"))
-                .expect("resolve explicit websocket url");
-        assert_eq!(resolved, "ws://127.0.0.1:5555");
+        let resolved = resolve_websocket_url(
+            Some("ws://127.0.0.1:5555"),
+            Some("ws://127.0.0.1:4444"),
+            Some("ws://127.0.0.1:3333"),
+        )
+        .expect("resolve explicit websocket url");
+        assert_eq!(resolved.url, "ws://127.0.0.1:5555");
+        assert_eq!(resolved.source, WebsocketUrlSource::Flag);
+        assert!(!resolved.manage_daemon());
     }
 
     #[test]
-    fn resolve_websocket_url_uses_env_when_flag_is_missing() {
-        let resolved =
-            resolve_websocket_url(None, Some("ws://127.0.0.1:4444")).expect("resolve env url");
-        assert_eq!(resolved, "ws://127.0.0.1:4444");
+    fn resolve_websocket_url_uses_new_env_before_legacy_env() {
+        let resolved = resolve_websocket_url(
+            None,
+            Some("ws://127.0.0.1:4444"),
+            Some("ws://127.0.0.1:3333"),
+        )
+        .expect("resolve env url");
+        assert_eq!(resolved.url, "ws://127.0.0.1:4444");
+        assert_eq!(resolved.source, WebsocketUrlSource::Environment);
+        assert!(!resolved.manage_daemon());
     }
 
     #[test]
-    fn resolve_websocket_url_falls_back_to_default() {
-        let resolved = resolve_websocket_url(None, None).expect("resolve default websocket url");
-        assert_eq!(resolved, DEFAULT_WS_URL);
+    fn resolve_websocket_url_keeps_legacy_env_as_fallback() {
+        let resolved = resolve_websocket_url(None, None, Some("ws://127.0.0.1:3333"))
+            .expect("resolve legacy env url");
+        assert_eq!(resolved.url, "ws://127.0.0.1:3333");
+        assert_eq!(resolved.source, WebsocketUrlSource::LegacyEnvironment);
+        assert!(!resolved.manage_daemon());
+    }
+
+    #[test]
+    fn resolve_websocket_url_falls_back_to_managed_default() {
+        let resolved =
+            resolve_websocket_url(None, None, None).expect("resolve default websocket url");
+        assert_eq!(resolved.url, DEFAULT_WS_URL);
+        assert_eq!(resolved.source, WebsocketUrlSource::Default);
+        assert!(resolved.manage_daemon());
+    }
+
+    #[test]
+    fn parse_cli_args_supports_doctor_json_and_live() {
+        let parsed = parse_cli_args(
+            vec![
+                "doctor".to_string(),
+                "--json".to_string(),
+                "--live".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse doctor");
+        let ParsedCommand::Run(cli) = parsed else {
+            panic!("expected doctor command");
+        };
+        assert_eq!(cli.command_kind, CommandKind::Doctor);
+        assert!(cli.json_output);
+        assert!(cli.doctor_live);
+    }
+
+    #[test]
+    fn parse_cli_args_supports_generated_shell_completions() {
+        let parsed = parse_cli_args(vec!["completions".to_string(), "zsh".to_string()].into_iter())
+            .expect("parse completions");
+        assert!(matches!(parsed, ParsedCommand::Completions(Shell::Zsh)));
+    }
+
+    #[test]
+    fn declarative_help_includes_portable_first_run_commands() {
+        let help = CliParser::command().render_long_help().to_string();
+        assert!(help.contains("doctor"));
+        assert!(help.contains("completions"));
+        assert!(help.contains("Run one Codex turn"));
     }
 
     #[test]
@@ -2933,6 +2744,58 @@ mod tests {
         let error = parse_cli_args(vec!["--network-access-enabled".to_string()].into_iter())
             .expect_err("removed network access flag");
         assert!(matches!(error, LunaError::Usage(_)));
+    }
+
+    #[test]
+    fn build_thread_config_rejects_silent_precedence_conflicts() {
+        let error = build_thread_config(
+            Some(r#"{"web_search":"cached"}"#.to_string()),
+            Vec::new(),
+            Some(WebSearchMode::Live),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .expect_err("conflicting sources should fail");
+        assert!(matches!(error, LunaError::Usage(_)));
+        assert!(format!("{error}").contains("web_search"));
+    }
+
+    #[test]
+    fn build_thread_config_allows_identical_values_from_multiple_sources() {
+        let config = build_thread_config(
+            Some(r#"{"web_search":"live"}"#.to_string()),
+            Vec::new(),
+            Some(WebSearchMode::Live),
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .expect("identical values should be accepted")
+        .expect("config should exist");
+        assert_eq!(config["web_search"], "live");
+    }
+
+    #[test]
+    fn account_readiness_supports_current_and_legacy_app_server_shapes() {
+        assert!(account_is_authenticated(&Map::from_iter([(
+            "account".to_string(),
+            serde_json::json!({ "type": "chatgpt" }),
+        )])));
+        assert!(account_is_authenticated(&Map::from_iter([(
+            "isLoggedIn".to_string(),
+            Value::Bool(true),
+        )])));
+        assert!(account_is_authenticated(&Map::from_iter([(
+            "requiresOpenaiAuth".to_string(),
+            Value::Bool(false),
+        )])));
+        assert!(!account_is_authenticated(&Map::from_iter([
+            ("account".to_string(), Value::Null),
+            ("requiresOpenaiAuth".to_string(), Value::Bool(true)),
+        ])));
     }
 
     #[test]
@@ -3252,70 +3115,6 @@ config_file = \"roles/reviewer.toml\"
         assert!(message.contains("failed to read model_instructions_file"));
 
         fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn resolve_codex_binary_parses_trimmed_path() {
-        let resolved = resolve_codex_binary_with(|program, args| {
-            assert_eq!(program, "which");
-            assert_eq!(args, ["codex"]);
-            Ok(CommandResult {
-                success: true,
-                stdout: " /usr/local/bin/codex  \n".to_string(),
-            })
-        })
-        .expect("resolve codex");
-
-        assert_eq!(resolved, "/usr/local/bin/codex");
-    }
-
-    #[test]
-    fn resolve_codex_binary_uses_first_non_empty_line() {
-        let resolved = resolve_codex_binary_with(|_, _| {
-            Ok(CommandResult {
-                success: true,
-                stdout: "\n/usr/bin/codex\n/opt/bin/codex\n".to_string(),
-            })
-        })
-        .expect("resolve codex");
-
-        assert_eq!(resolved, "/usr/bin/codex");
-    }
-
-    #[test]
-    fn resolve_codex_binary_errors_when_which_fails() {
-        let error = resolve_codex_binary_with(|_, _| {
-            Ok(CommandResult {
-                success: false,
-                stdout: String::new(),
-            })
-        })
-        .expect_err("expected failure");
-
-        assert!(matches!(error, LunaError::Config(_)));
-    }
-
-    #[test]
-    fn resolve_codex_binary_errors_on_empty_output() {
-        let error = resolve_codex_binary_with(|_, _| {
-            Ok(CommandResult {
-                success: true,
-                stdout: "   \n".to_string(),
-            })
-        })
-        .expect_err("expected failure");
-
-        assert!(matches!(error, LunaError::Config(_)));
-    }
-
-    #[test]
-    fn resolve_codex_binary_errors_when_command_cannot_run() {
-        let error = resolve_codex_binary_with(|_, _| {
-            Err(io::Error::new(io::ErrorKind::NotFound, "which not found"))
-        })
-        .expect_err("expected failure");
-
-        assert!(matches!(error, LunaError::Config(_)));
     }
 
     #[test]

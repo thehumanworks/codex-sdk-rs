@@ -16,7 +16,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
   - Use `start_ws_daemon` to reuse or start `codex app-server --listen ...` with separate `listen_url` and `connect_url`.
   - Use `start_ws_blocking` when the SDK should own the child process lifecycle instead of leaving a daemon running.
   - `start_and_connect_ws` remains the loopback convenience wrapper for `ws://127.0.0.1:*`, `ws://[::1]:*`, and `ws://localhost:*`; `wss://` URLs are connect-only and are never auto-started.
-  - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
+  - Daemon logs are written with restrictive permissions under the platform temporary directory's `codex-app-server-sdk/` subdirectory and rotate at 10 MiB.
 
 ## Quickstart (stdio)
 
@@ -252,8 +252,9 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## `luna` CLI
 
-The repository includes a `luna` binary with explicit `exec`, `start`, and `sessions` commands. The `exec` command is also available through the short alias `luna x`.
-By default `luna exec` connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
+The repository includes a `luna` binary with explicit `exec`, `start`, `sessions`, and `doctor` commands. The `exec` command is also available through the short alias `luna x`. See [`crates/luna/README.md`](crates/luna/README.md) for release installation, compatibility, diagnostic schema, integrity verification, and stable exit-code contracts.
+
+By default `luna exec` probes `ws://127.0.0.1:4222` and reuses or starts the loopback app-server daemon when no instance is running. A separate `luna start` call is not required:
 
 ```bash
 cargo run -p luna -- exec "Summarize this repository in one sentence."
@@ -271,10 +272,10 @@ By default, Luna sets Codex `cwd` to the current shell working directory where `
 cargo run -p luna -- exec --cwd /path/to/project "Summarize this repository in one sentence."
 ```
 
-`luna exec` resolves its websocket URL in this order: `--ws-url`, `CODEX_WEB_SERVER_URL`, then the default `ws://127.0.0.1:4222`.
+`luna exec` resolves its websocket URL in this order: `--ws-url`, `CODEX_APP_SERVER_WS_URL`, legacy `CODEX_WEB_SERVER_URL`, then the default `ws://127.0.0.1:4222`. Flag and environment URLs are connect-only; automatic process management applies only to the implicit default URL.
 
 ```bash
-CODEX_WEB_SERVER_URL=ws://127.0.0.1:5222 cargo run -p luna -- exec "Summarize this repository in one sentence."
+CODEX_APP_SERVER_WS_URL=ws://127.0.0.1:5222 cargo run -p luna -- exec "Summarize this repository in one sentence."
 ```
 
 Use `--no-daemon` with `luna exec` to connect to a websocket URL without spawning a local daemon process:
@@ -288,6 +289,15 @@ Use `--stdio` with `luna exec` to force app-server stdio transport instead:
 ```bash
 cargo run -p luna -- exec --stdio "Summarize this repository in one sentence."
 ```
+
+Run an offline, redacted installation/configuration check before the first turn:
+
+```bash
+cargo run -p luna -- doctor --summary
+cargo run -p luna -- doctor --json
+```
+
+`luna doctor --live` additionally runs the upstream Codex doctor and checks Luna's selected app-server handshake and account state. Offline doctor does not run upstream network checks or make a model request.
 
 Use `--final-response` with `luna exec` to print only the final message content:
 
@@ -319,7 +329,7 @@ cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 
 Additional optional config flags:
 
-- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_WEB_SERVER_URL`
+- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_APP_SERVER_WS_URL` (legacy fallback: `CODEX_WEB_SERVER_URL`)
 - model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`
@@ -344,8 +354,7 @@ cargo run -p luna -- \
 ```
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/config.toml` under `[agents.<name>]`.
-When `--stdio` is used, `luna` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
-If startup fails with a codex lookup error, run `which codex` and ensure your shell PATH includes the desired Codex CLI install.
+Luna resolves the Codex CLI with OS-native `PATH` traversal and executable suffix rules. Set `CODEX_BINARY` to an explicit executable when Codex is installed outside `PATH`. Missing dependencies and unauthenticated accounts fail before a turn with a stable category and an actionable `luna doctor` next step.
 `[agents.<name>].config_file` points to a role TOML file (relative paths resolve from the config file directory).
 `luna` maps the role to thread `developer_instructions` in this order:
 - `developer_instructions` from the role config file

@@ -3,7 +3,9 @@
 > Let a developer install Luna on a supported machine and reach either a successful first turn or an actionable diagnosis without cloning the repository or installing Rust.
 
 **Research snapshot:** 2026-08-02<br>
-**Decision status:** strongest surviving hypothesis, not yet validated with users
+**Decision status:** implemented on 2026-08-02; fresh-environment value experiment not yet run
+
+**Implementation:** the Luna CLI now provides versioned offline/live doctor reports, stable error categories, OS-neutral Codex discovery, explicit WebSocket ownership, portable temp/log handling, declarative help/completions, a checksum-verifying version-pinned installer, and an attested release workflow. See the [Luna README](../../README.md) for the shipped contract. Package-manager expansion, self-update, Windows release assets, and the proposed 5–8-environment value experiment remain gated by the original evidence criteria rather than being treated as automatically approved scope.
 
 ![Three-stage terminal storyboard for installing, diagnosing, and running Luna](./concept-art.png)
 
