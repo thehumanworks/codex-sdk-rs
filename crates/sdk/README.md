@@ -4,7 +4,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 
 ## Status
 
-- `0.5.1`
+- `0.6.0` — **contains breaking changes**; see [CHANGELOG](../../CHANGELOG.md).
 - Focused on deterministic automation: explicit timeouts and no implicit retries.
 - Typed v2 request methods with raw JSON fallback for protocol drift.
 
