@@ -4,17 +4,6 @@ use serde_json::Value;
 use crate::protocol::responses::{ThreadSummary, Turn};
 use crate::protocol::shared::RequestId;
 
-macro_rules! opaque_struct {
-    ($name:ident) => {
-        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-        #[serde(rename_all = "camelCase")]
-        pub struct $name {
-            #[serde(flatten)]
-            pub extra: serde_json::Map<String, Value>,
-        }
-    };
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ErrorNotification {

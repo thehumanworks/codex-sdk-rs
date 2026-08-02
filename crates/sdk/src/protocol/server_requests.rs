@@ -1,17 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-macro_rules! opaque_struct {
-    ($name:ident) => {
-        #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-        #[serde(rename_all = "camelCase")]
-        pub struct $name {
-            #[serde(flatten)]
-            pub extra: serde_json::Map<String, Value>,
-        }
-    };
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatgptAuthTokensRefreshParams {

@@ -22,7 +22,6 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 url = "2"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
-serde_yaml = "0.9"
 
 [dev-dependencies]
 anyhow = "1"
