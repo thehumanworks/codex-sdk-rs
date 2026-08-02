@@ -20,7 +20,6 @@ use serde_json::{Map, Value};
 const DEFAULT_MODEL: &str = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT: ModelReasoningEffort = ModelReasoningEffort::Low;
 const DEV_INSTRUCTIONS_PREVIEW_CHARS: usize = 220;
-const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "kebab-case")]
@@ -38,6 +37,10 @@ struct Cli {
     /// The websocket URL to connect to
     #[arg(long)]
     ws_url: Option<String>,
+
+    /// Working directory for the thread (defaults to the invocation directory)
+    #[arg(long)]
+    cwd: Option<PathBuf>,
 
     #[arg(long)]
     agent: Option<String>,
@@ -92,8 +95,6 @@ struct AgentConfig {
     developer_instructions: Option<String>,
     #[serde(default)]
     model_instructions_file: Option<String>,
-    #[serde(default)]
-    nickname_candidates: Vec<String>,
     #[serde(default)]
     model_reasoning_effort: Option<ModelReasoningEffort>,
     #[serde(default)]
@@ -178,8 +179,6 @@ fn load_agent(
 fn load_agent_from_str(agent_name: &str, path: &Path, file: &str) -> anyhow::Result<LoadedAgent> {
     let config: AgentConfig = toml::from_str(&file)
         .with_context(|| format!("failed to parse agent config {}", path.display()))?;
-    validate_nickname_candidates(&config.nickname_candidates)
-        .with_context(|| format!("invalid nickname_candidates in {}", path.display()))?;
     let developer_instructions = resolve_developer_instructions(agent_name, path, &config)?;
     let mut config_map = config_map_from_agent(&config)
         .with_context(|| format!("failed to map agent config {}", path.display()))?;
@@ -203,28 +202,6 @@ fn load_agent_from_str(agent_name: &str, path: &Path, file: &str) -> anyhow::Res
         developer_instructions,
         config: std::mem::take(&mut config_map),
     })
-}
-
-fn validate_nickname_candidates(candidates: &[String]) -> anyhow::Result<()> {
-    let mut seen = HashSet::new();
-    for candidate in candidates {
-        if candidate.is_empty() {
-            anyhow::bail!("nickname candidate cannot be empty");
-        }
-        if !candidate
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '-' | '_'))
-        {
-            anyhow::bail!(
-                "nickname candidate '{candidate}' may only contain ASCII letters, digits, spaces, hyphens, and underscores"
-            );
-        }
-        if !seen.insert(candidate) {
-            anyhow::bail!("nickname candidate '{candidate}' is duplicated");
-        }
-    }
-
-    Ok(())
 }
 
 fn resolve_developer_instructions(
@@ -636,13 +613,17 @@ fn completed_reasoning_text<'a>(
     }
 }
 
-fn build_thread_config(active_agent: Option<LoadedAgent>) -> ThreadOptions {
+fn build_thread_config(
+    active_agent: Option<LoadedAgent>,
+    working_directory: &Path,
+) -> ThreadOptions {
     let mut config_map = Map::new();
     config_map.insert("service_tier".to_string(), "fast".into());
     let mut builder = ThreadOptions::builder()
         .model(DEFAULT_MODEL)
         .model_reasoning_effort(DEFAULT_REASONING_EFFORT)
         .ephemeral(true)
+        .working_directory(working_directory.display().to_string())
         .skip_git_repo_check(true);
 
     if let Some(agent) = active_agent {
@@ -690,18 +671,34 @@ fn build_thread_config(active_agent: Option<LoadedAgent>) -> ThreadOptions {
     builder.build()
 }
 
+fn connect_failure_message(
+    ws_url: &str,
+    connect_error: &impl std::fmt::Display,
+    start_error: &impl std::fmt::Display,
+) -> String {
+    format!(
+        "failed to connect to websocket at `{ws_url}` ({connect_error}); \
+         starting a local app-server as a fallback also failed: {start_error}"
+    )
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let cwd = env::current_dir().context("failed to resolve current working directory")?;
+    let invocation_dir =
+        env::current_dir().context("failed to resolve current working directory")?;
+    let working_directory = cli.cwd.clone().unwrap_or_else(|| invocation_dir.clone());
     let active_agent = cli
         .agent
         .as_deref()
-        .map(|agent_name| load_agent(agent_name, cli.scope, &cwd))
+        .map(|agent_name| load_agent(agent_name, cli.scope, &invocation_dir))
         .transpose()?;
     let turn_start_info = active_agent.as_ref().map(TurnStartInfo::from);
-    let ws_url = cli.ws_url.unwrap_or_else(|| DEFAULT_WS_URL.to_string());
-    let ws_config = WsConfig::default().with_url(&ws_url);
+    let ws_config = match cli.ws_url {
+        Some(ref ws_url) => WsConfig::default().with_url(ws_url),
+        None => WsConfig::default(),
+    };
+    let ws_url = ws_config.url.clone();
 
     if !cli.last_response_only
         && let Some(ref info) = turn_start_info
@@ -711,23 +708,24 @@ async fn main() -> anyhow::Result<()> {
 
     let client = match CodexClient::connect_ws(ws_config.clone()).await {
         Ok(client) => client,
-        Err(error) => {
-            if ws_url.starts_with("ws://127.0.0.1:")
-                || ws_url.starts_with("ws://localhost:")
-                || ws_url.starts_with("ws://0.0.0.0:")
-            {
-                CodexClient::start_and_connect_ws(ws_config).await?
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Connection to websocket failed: {}",
-                    error.to_string()
-                ));
-            }
+        Err(connect_error) => {
+            // Fall back to starting a local app-server. The SDK only starts
+            // servers for managed (loopback) targets and fails cleanly
+            // otherwise, so no loopback detection is needed here.
+            CodexClient::start_and_connect_ws(ws_config)
+                .await
+                .map_err(|start_error| {
+                    anyhow::anyhow!(connect_failure_message(
+                        &ws_url,
+                        &connect_error,
+                        &start_error
+                    ))
+                })?
         }
     };
     let mut thread = client
         .as_api()
-        .start_thread(build_thread_config(active_agent));
+        .start_thread(build_thread_config(active_agent, &working_directory));
 
     if cli.last_response_only {
         let final_response = thread
@@ -1036,7 +1034,6 @@ mod tests {
         "name",
         "description",
         "developer_instructions",
-        "nickname_candidates",
         "model",
         "model_reasoning_effort",
         "sandbox_mode",
@@ -1070,6 +1067,61 @@ mod tests {
     }
 
     #[test]
+    fn cwd_flag_reaches_thread_options_working_directory() {
+        let cli = Cli::try_parse_from(["agx", "review this", "--cwd", "/tmp/project"])
+            .expect("parse cwd flag");
+        let cwd = cli.cwd.expect("cwd flag parsed");
+
+        let thread_options = build_thread_config(None, &cwd);
+
+        assert_eq!(
+            thread_options.working_directory.as_deref(),
+            Some("/tmp/project")
+        );
+    }
+
+    #[test]
+    fn cwd_flag_defaults_to_none_so_invocation_directory_is_used() {
+        let cli = Cli::try_parse_from(["agx", "review this"]).expect("parse without cwd flag");
+
+        assert_eq!(cli.cwd, None);
+    }
+
+    #[test]
+    fn connect_failure_message_includes_url_and_both_errors() {
+        let message = connect_failure_message(
+            "ws://203.0.113.10:4222",
+            &"connection refused",
+            &"invalid websocket URL",
+        );
+
+        assert!(message.contains("ws://203.0.113.10:4222"));
+        assert!(message.contains("connection refused"));
+        assert!(message.contains("invalid websocket URL"));
+    }
+
+    #[test]
+    fn unknown_agent_config_keys_are_tolerated() {
+        let agent = load_agent_from_str(
+            "reviewer",
+            Path::new("/tmp/reviewer.toml"),
+            r#"
+name = "reviewer"
+developer_instructions = "Review code"
+nickname_candidates = ["Atlas", "Delta"]
+some_future_key = "value"
+"#,
+        )
+        .expect("unknown keys must not fail agent loading");
+
+        assert_eq!(
+            agent.config.get("nickname_candidates"),
+            Some(&json!(["Atlas", "Delta"]))
+        );
+        assert_eq!(agent.config.get("some_future_key"), Some(&json!("value")));
+    }
+
+    #[test]
     fn cli_accepts_last_response_only_flag() {
         let parsed = Cli::try_parse_from(["agx", "review this", "--last-response-only"])
             .expect("parse last response flag");
@@ -1084,7 +1136,6 @@ mod tests {
 name = "reviewer"
 description = "PR reviewer focused on correctness, security, and missing tests."
 developer_instructions = "Review code like an owner."
-nickname_candidates = ["Atlas", "Delta"]
 model = "gpt-5.3-codex"
 model_provider = "openai"
 model_reasoning_effort = "xhigh"
@@ -1122,7 +1173,6 @@ enabled = true
             raw_config.description.as_deref(),
             Some("PR reviewer focused on correctness, security, and missing tests.")
         );
-        assert_eq!(raw_config.nickname_candidates, ["Atlas", "Delta"]);
         assert_eq!(raw_config.model_verbosity, Some(ModelVerbosity::High));
 
         let agent = load_agent_from_str("reviewer", path, agent_toml).expect("load agent");
@@ -1157,7 +1207,11 @@ enabled = true
             Some(&json!([{"path": "skills/reviewer", "enabled": true}]))
         );
 
-        let thread_options = build_thread_config(Some(agent));
+        let thread_options = build_thread_config(Some(agent), Path::new("/tmp/workspace"));
+        assert_eq!(
+            thread_options.working_directory.as_deref(),
+            Some("/tmp/workspace")
+        );
         assert_eq!(thread_options.model.as_deref(), Some("gpt-5.3-codex"));
         assert_eq!(thread_options.model_provider.as_deref(), Some("openai"));
         assert_eq!(
@@ -1188,8 +1242,12 @@ enabled = true
 
     #[test]
     fn agent_omitted_options_use_cli_defaults() {
-        let thread_options = build_thread_config(None);
+        let thread_options = build_thread_config(None, Path::new("/tmp/workspace"));
 
+        assert_eq!(
+            thread_options.working_directory.as_deref(),
+            Some("/tmp/workspace")
+        );
         assert_eq!(thread_options.model.as_deref(), Some(DEFAULT_MODEL));
         assert_eq!(
             thread_options.model_reasoning_effort,
