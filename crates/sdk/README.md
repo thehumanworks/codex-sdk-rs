@@ -93,7 +93,9 @@ Use `run_streamed(...)` when you need incremental item and lifecycle events.
 For terminal-agnostic presentation, `ThreadEventRenderer` converts streamed
 events into typed `RenderedItem` markdown fragments. It emits text deltas
 incrementally, suppresses their duplicate completed snapshots, and renders every
-`ThreadItem` variant (including unknown future items) with a visible fallback.
+`ThreadItem` variant (including unknown future items) with a visible fallback,
+except display-only items such as reasoning with no text, which have empty
+markdown and are suppressed by `ThreadEventRenderer`.
 Applications remain responsible for terminal color and writing:
 
 ```rust

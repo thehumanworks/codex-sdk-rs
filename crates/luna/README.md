@@ -152,4 +152,6 @@ modules so they can be tested without a live model turn.
 Human output includes agent text, reasoning summaries, plans, tool calls,
 commands, patches, status items, and errors. Luna uses `owo-colors` for semantic
 styling and emits no ANSI escapes when stdout is not a terminal or `NO_COLOR` is
-set. `--json` retains the newline-delimited event schema for machine consumers.
+set. It does not echo the submitted user message or print reasoning items with no
+visible text. `--json` retains the complete newline-delimited event schema for
+machine consumers.

@@ -75,7 +75,8 @@ println!("response: {}", turn.final_response);
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
 `ThreadEventRenderer` converts those events into terminal-agnostic, typed
 markdown fragments, streams text deltas without repeating completed snapshots,
-and provides a visible fallback for every `ThreadItem` variant.
+and provides a visible fallback for every `ThreadItem` variant. Display-only
+items with no text, such as empty reasoning items, are suppressed.
 
 `AgentMessageItem.phase` mirrors the app-server’s optional `agentMessage.phase` field (`commentary` or `final_answer`). Use `message.is_final_answer()` to identify the final turn message from `ItemCompleted`; `Turn.final_response` and `ask(...)` already prefer the `final_answer` item when the server provides it and otherwise fall back to the last completed agent message.
 
@@ -326,7 +327,7 @@ cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 - reasoning effort: `max` (override: `--reasoning-effort`)
 - websocket transport (`ws://127.0.0.1:4222`) unless `luna exec --stdio` is provided
 - Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
-- human output includes agent messages, reasoning, tools, commands, patches, statuses, and errors; semantic color is disabled for non-TTY output and `NO_COLOR`
+- human output includes agent messages, non-empty reasoning, tools, commands, patches, statuses, and errors without echoing the submitted prompt; semantic color is disabled for non-TTY output and `NO_COLOR`
 - `--json` continues to emit newline-delimited typed event objects without human styling
 - `luna exec --continue` and `luna exec --resume <session_id>` are mutually exclusive
 - transport initialization is started early and overlapped with prompt/config resolution to reduce first-message latency
