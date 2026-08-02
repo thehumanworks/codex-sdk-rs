@@ -482,26 +482,6 @@ impl TurnOptions {
     pub fn builder() -> TurnOptionsBuilder {
         TurnOptionsBuilder::new()
     }
-
-    pub fn with_output_schema(mut self, output_schema: Value) -> Self {
-        self.output_schema = Some(output_schema);
-        self
-    }
-
-    pub fn with_output_schema_for<T: OpenAiSerializable>(mut self) -> Self {
-        self.output_schema = Some(T::openai_output_schema());
-        self
-    }
-
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
-        self
-    }
-
-    pub fn with_working_directory(mut self, working_directory: impl Into<String>) -> Self {
-        self.working_directory = Some(working_directory.into());
-        self
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -694,8 +674,6 @@ pub struct Turn {
     pub final_response: String,
     pub usage: Option<Usage>,
 }
-
-pub type RunResult = Turn;
 
 pub struct StreamedTurn {
     receiver: mpsc::Receiver<Result<ThreadEvent, ClientError>>,
@@ -1003,10 +981,6 @@ impl Codex {
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
         let client = CodexClient::connect_ws(config).await?;
         Ok(Self::from_client(client))
-    }
-
-    pub async fn start_ws(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
-        CodexClient::start_ws(config).await
     }
 
     pub async fn start_ws_daemon(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
@@ -2174,7 +2148,6 @@ fn build_turn_start_params(
             .sandbox_policy
             .clone()
             .or_else(|| options.sandbox_policy.clone()),
-        collaboration_mode: None,
         extra,
     }
 }
@@ -3357,10 +3330,14 @@ collaboration_mode = "plan"
 
     #[test]
     fn turn_options_value_helpers_set_raw_and_typed_schemas() {
-        let raw = TurnOptions::default().with_output_schema(json!({"type": "object"}));
+        let raw = TurnOptions::builder()
+            .output_schema(json!({"type": "object"}))
+            .build();
         assert_eq!(raw.output_schema, Some(json!({"type": "object"})));
 
-        let typed = TurnOptions::default().with_output_schema_for::<StructuredReply>();
+        let typed = TurnOptions::builder()
+            .output_schema_for::<StructuredReply>()
+            .build();
         assert_eq!(
             typed.output_schema,
             Some(StructuredReply::openai_output_schema())

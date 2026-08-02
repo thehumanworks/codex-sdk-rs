@@ -7,7 +7,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `connect_ws` accepts both `ws://` and `wss://` URLs; the daemon helper above remains ws-only.
     let client = CodexClient::connect_ws(WsConfig::default()).await?;
 
-    let mut thread = client.start_thread(
+    let mut thread = client.as_api().start_thread(
         ThreadOptions::builder()
             .model("gpt-5.3-codex-spark")
             .skip_git_repo_check(true)

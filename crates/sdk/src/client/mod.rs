@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, oneshot};
 
-use crate::api::{Codex, ResumeThread, Thread, ThreadOptions};
+use crate::api::Codex;
 use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming};
 use crate::events::{
     ServerEvent, ServerNotification, ServerRequestEvent, parse_notification, parse_server_request,
@@ -479,10 +479,6 @@ impl CodexClient {
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }
 
-    pub async fn start_ws(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
-        Self::start_ws_daemon(config).await
-    }
-
     pub async fn start_ws_daemon(config: WsStartConfig) -> Result<WsServerHandle, ClientError> {
         start_ws_server(&config, WsStartMode::Daemon).await
     }
@@ -524,22 +520,6 @@ impl CodexClient {
 
     pub fn as_api(&self) -> Codex {
         Codex::from_client(self.clone())
-    }
-
-    pub fn start_thread(&self, options: ThreadOptions) -> Thread {
-        self.as_api().start_thread(options)
-    }
-
-    pub fn resume_thread(&self, target: impl Into<ResumeThread>, options: ThreadOptions) -> Thread {
-        self.as_api().resume_thread(target, options)
-    }
-
-    pub fn resume_thread_by_id(&self, id: impl Into<String>, options: ThreadOptions) -> Thread {
-        self.as_api().resume_thread_by_id(id, options)
-    }
-
-    pub fn resume_latest_thread(&self, options: ThreadOptions) -> Thread {
-        self.as_api().resume_latest_thread(options)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ServerEvent> {

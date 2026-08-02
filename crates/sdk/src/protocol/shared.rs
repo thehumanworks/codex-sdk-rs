@@ -21,18 +21,6 @@ pub struct JsonRpcRequest<P> {
     pub params: P,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcNotification<P> {
-    pub method: String,
-    pub params: P,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonRpcResponse<R> {
-    pub id: RequestId,
-    pub result: R,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EmptyObject {
     #[serde(flatten)]

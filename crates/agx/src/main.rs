@@ -751,7 +751,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     };
-    let mut thread = client.start_thread(build_thread_config(active_agent));
+    let mut thread = client
+        .as_api()
+        .start_thread(build_thread_config(active_agent));
 
     if cli.last_response_only {
         let final_response = thread

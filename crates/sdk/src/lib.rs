@@ -14,10 +14,10 @@ pub use api::{
     CommandExecutionStatus, ContextCompactionItem, DynamicToolCallItem, DynamicToolSpec, ErrorItem,
     FileChangeItem, FileUpdateChange, ImageViewItem, Input, McpToolCallItem, McpToolCallStatus,
     ModelReasoningEffort, ModelReasoningSummary, PatchApplyStatus, PatchChangeKind, Personality,
-    PlanItem, ReasoningItem, ResumeThread, ReviewModeItem, RunResult, SandboxMode, StreamedTurn,
-    Thread, ThreadError, ThreadEvent, ThreadItem, ThreadOptions, ThreadOptionsBuilder,
-    ThreadRunError, TodoItem, TodoListItem, Turn, TurnOptions, TurnOptionsBuilder, Usage,
-    UserInput, UserMessageContentItem, UserMessageItem, WebSearchItem, WebSearchMode,
+    PlanItem, ReasoningItem, ResumeThread, ReviewModeItem, SandboxMode, StreamedTurn, Thread,
+    ThreadError, ThreadEvent, ThreadItem, ThreadOptions, ThreadOptionsBuilder, ThreadRunError,
+    TodoItem, TodoListItem, Turn, TurnOptions, TurnOptionsBuilder, UnknownItem, Usage, UserInput,
+    UserMessageContentItem, UserMessageItem, WebSearchItem, WebSearchMode,
 };
 pub use client::{
     ClientOptions, CodexClient, StdioConfig, WsConfig, WsServerHandle, WsStartConfig, WsStartMode,

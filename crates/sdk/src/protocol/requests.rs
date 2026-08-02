@@ -265,8 +265,6 @@ pub struct TurnStartParams {
     pub approval_policy: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_policy: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collaboration_mode: Option<String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
 }
@@ -285,7 +283,6 @@ impl TurnStartParams {
             output_schema: None,
             approval_policy: None,
             sandbox_policy: None,
-            collaboration_mode: None,
             extra: serde_json::Map::new(),
         }
     }

@@ -21,7 +21,7 @@ struct SearchResults {
 async fn main() -> anyhow::Result<()> {
     let client =
         CodexClient::connect_ws(WsConfig::default().with_url("ws://192.168.1.201:4222")).await?;
-    let mut thread = client.start_thread(
+    let mut thread = client.as_api().start_thread(
         ThreadOptions::builder()
             .model("gpt-5.3-codex-spark")
             .model_reasoning_effort(codex_app_server_sdk::ModelReasoningEffort::High)
