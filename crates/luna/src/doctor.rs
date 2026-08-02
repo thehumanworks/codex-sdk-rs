@@ -263,9 +263,7 @@ fn check_temp_directory() -> DoctorCheck {
         if let Ok(metadata) = fs::symlink_metadata(&directory)
             && metadata.file_type().is_symlink()
         {
-            return Err(io::Error::other(
-                "app-server log directory is a symlink",
-            ));
+            return Err(io::Error::other("app-server log directory is a symlink"));
         }
         fs::create_dir_all(&directory)?;
         let probe = directory.join(format!(".luna-doctor-{}", std::process::id()));
