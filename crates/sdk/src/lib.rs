@@ -27,9 +27,7 @@ pub use error::{ClientError, RpcError};
 pub use events::render::{RenderedItem, RenderedItemKind, ThreadEventRenderer, render_thread_item};
 pub use events::{ServerEvent, ServerNotification, ServerRequestEvent};
 pub use protocol::{notifications, requests, responses, server_requests, shared};
-pub use schema::{
-    OpenAiSerializable, openai_json_schema_for,
-};
+pub use schema::{OpenAiSerializable, openai_json_schema_for};
 pub use schemars::{self, JsonSchema};
 pub use serde::{self, Deserialize, Serialize};
 

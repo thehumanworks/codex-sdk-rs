@@ -13,7 +13,7 @@ use crate::client::WsConfig;
 use crate::client::{WsServerHandle, WsStartConfig};
 use crate::error::ClientError;
 use crate::events::{ServerEvent, ServerNotification};
-use crate::protocol::shared::EmptyObject;
+use crate::protocol::methods::codex_rpc_table;
 use crate::protocol::{requests, responses};
 use crate::schema::OpenAiSerializable;
 
@@ -731,21 +731,52 @@ pub enum ThreadItem {
     Unknown(UnknownItem),
 }
 
-macro_rules! codex_forward_typed_method {
-    ($method:ident, $params_ty:ty, $result_ty:ty) => {
-        pub async fn $method(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
+/// Expands the shared RPC method table
+/// ([`codex_rpc_table!`](crate::protocol::methods)) into `Codex`'s forwards:
+/// each generated method completes the app-server handshake via
+/// `ensure_initialized` and then delegates to the `CodexClient` method of
+/// the same name. One recursive arm per row kind (`typed`, `null`, `alias`);
+/// `alias` rows delegate to another `Codex` method, which already ensures
+/// initialization.
+macro_rules! define_codex_forwards {
+    () => {};
+    (
+        $(#[$doc:meta])*
+        typed $fn_name:ident, $method:literal, $params_ty:ty, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
+        pub async fn $fn_name(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
             self.ensure_initialized().await?;
-            self.inner.client.$method(params).await
+            self.inner.client.$fn_name(params).await
         }
-    };
-}
 
-macro_rules! codex_forward_null_method {
-    ($method:ident, $result_ty:ty) => {
-        pub async fn $method(&self) -> Result<$result_ty, ClientError> {
+        define_codex_forwards! { $($rest)* }
+    };
+    (
+        $(#[$doc:meta])*
+        null $fn_name:ident, $method:literal, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
+        pub async fn $fn_name(&self) -> Result<$result_ty, ClientError> {
             self.ensure_initialized().await?;
-            self.inner.client.$method().await
+            self.inner.client.$fn_name().await
         }
+
+        define_codex_forwards! { $($rest)* }
+    };
+    (
+        $(#[$doc:meta])*
+        alias $fn_name:ident => $target:ident, $params_ty:ty, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
+        pub async fn $fn_name(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
+            self.$target(params).await
+        }
+
+        define_codex_forwards! { $($rest)* }
     };
 }
 
@@ -859,222 +890,7 @@ impl Codex {
         thread.ask(input, turn_options).await
     }
 
-    /// Lists recorded threads after ensuring the app-server handshake is complete.
-    pub async fn thread_list(
-        &self,
-        params: requests::ThreadListParams,
-    ) -> Result<responses::ThreadListResult, ClientError> {
-        self.ensure_initialized().await?;
-        self.inner.client.thread_list(params).await
-    }
-
-    codex_forward_typed_method!(
-        thread_start,
-        requests::ThreadStartParams,
-        responses::ThreadResult
-    );
-    codex_forward_typed_method!(
-        thread_resume,
-        requests::ThreadResumeParams,
-        responses::ThreadResult
-    );
-    codex_forward_typed_method!(
-        thread_fork,
-        requests::ThreadForkParams,
-        responses::ThreadResult
-    );
-    codex_forward_typed_method!(
-        thread_archive,
-        requests::ThreadArchiveParams,
-        responses::ThreadArchiveResult
-    );
-    codex_forward_typed_method!(
-        thread_name_set,
-        requests::ThreadSetNameParams,
-        responses::ThreadSetNameResult
-    );
-    codex_forward_typed_method!(
-        thread_unarchive,
-        requests::ThreadUnarchiveParams,
-        responses::ThreadUnarchiveResult
-    );
-    codex_forward_typed_method!(
-        thread_compact_start,
-        requests::ThreadCompactStartParams,
-        responses::ThreadCompactStartResult
-    );
-    codex_forward_typed_method!(
-        thread_background_terminals_clean,
-        requests::ThreadBackgroundTerminalsCleanParams,
-        responses::ThreadBackgroundTerminalsCleanResult
-    );
-    codex_forward_typed_method!(
-        thread_rollback,
-        requests::ThreadRollbackParams,
-        responses::ThreadRollbackResult
-    );
-    codex_forward_typed_method!(
-        thread_loaded_list,
-        requests::ThreadLoadedListParams,
-        responses::ThreadLoadedListResult
-    );
-    codex_forward_typed_method!(
-        thread_read,
-        requests::ThreadReadParams,
-        responses::ThreadReadResult
-    );
-    codex_forward_typed_method!(
-        skills_list,
-        requests::SkillsListParams,
-        responses::SkillsListResult
-    );
-    codex_forward_typed_method!(
-        skills_remote_list,
-        requests::SkillsRemoteReadParams,
-        responses::SkillsRemoteReadResult
-    );
-    codex_forward_typed_method!(
-        skills_remote_export,
-        requests::SkillsRemoteWriteParams,
-        responses::SkillsRemoteWriteResult
-    );
-    codex_forward_typed_method!(
-        app_list,
-        requests::AppsListParams,
-        responses::AppsListResult
-    );
-    codex_forward_typed_method!(
-        skills_config_write,
-        requests::SkillsConfigWriteParams,
-        responses::SkillsConfigWriteResult
-    );
-    codex_forward_typed_method!(turn_start, requests::TurnStartParams, responses::TurnResult);
-    codex_forward_typed_method!(
-        turn_steer,
-        requests::TurnSteerParams,
-        responses::TurnSteerResult
-    );
-    codex_forward_typed_method!(turn_interrupt, requests::TurnInterruptParams, EmptyObject);
-    codex_forward_typed_method!(
-        review_start,
-        requests::ReviewStartParams,
-        responses::ReviewStartResult
-    );
-    codex_forward_typed_method!(
-        model_list,
-        requests::ModelListParams,
-        responses::ModelListResult
-    );
-    codex_forward_typed_method!(
-        experimental_feature_list,
-        requests::ExperimentalFeatureListParams,
-        responses::ExperimentalFeatureListResult
-    );
-    codex_forward_typed_method!(
-        collaboration_mode_list,
-        requests::CollaborationModeListParams,
-        responses::CollaborationModeListResult
-    );
-    codex_forward_typed_method!(
-        mock_experimental_method,
-        requests::MockExperimentalMethodParams,
-        responses::MockExperimentalMethodResult
-    );
-    codex_forward_typed_method!(
-        mcp_server_oauth_login,
-        requests::McpServerOauthLoginParams,
-        responses::McpServerOauthLoginResult
-    );
-    codex_forward_typed_method!(
-        mcp_server_status_list,
-        requests::ListMcpServerStatusParams,
-        responses::McpServerStatusListResult
-    );
-    codex_forward_typed_method!(
-        windows_sandbox_setup_start,
-        requests::WindowsSandboxSetupStartParams,
-        responses::WindowsSandboxSetupStartResult
-    );
-    codex_forward_typed_method!(
-        account_login_start,
-        requests::LoginAccountParams,
-        responses::LoginAccountResult
-    );
-    codex_forward_typed_method!(
-        account_login_cancel,
-        requests::CancelLoginAccountParams,
-        EmptyObject
-    );
-    codex_forward_typed_method!(
-        feedback_upload,
-        requests::FeedbackUploadParams,
-        responses::FeedbackUploadResult
-    );
-    codex_forward_typed_method!(
-        command_exec,
-        requests::CommandExecParams,
-        responses::CommandExecResult
-    );
-    codex_forward_typed_method!(
-        config_read,
-        requests::ConfigReadParams,
-        responses::ConfigReadResult
-    );
-    codex_forward_typed_method!(
-        config_value_write,
-        requests::ConfigValueWriteParams,
-        responses::ConfigValueWriteResult
-    );
-    codex_forward_typed_method!(
-        config_batch_write,
-        requests::ConfigBatchWriteParams,
-        responses::ConfigBatchWriteResult
-    );
-    codex_forward_typed_method!(
-        account_read,
-        requests::GetAccountParams,
-        responses::GetAccountResult
-    );
-    codex_forward_typed_method!(
-        fuzzy_file_search_session_start,
-        requests::FuzzyFileSearchSessionStartParams,
-        responses::FuzzyFileSearchSessionStartResult
-    );
-    codex_forward_typed_method!(
-        fuzzy_file_search_session_update,
-        requests::FuzzyFileSearchSessionUpdateParams,
-        responses::FuzzyFileSearchSessionUpdateResult
-    );
-    codex_forward_typed_method!(
-        fuzzy_file_search_session_stop,
-        requests::FuzzyFileSearchSessionStopParams,
-        responses::FuzzyFileSearchSessionStopResult
-    );
-
-    pub async fn skills_remote_read(
-        &self,
-        params: requests::SkillsRemoteReadParams,
-    ) -> Result<responses::SkillsRemoteReadResult, ClientError> {
-        self.skills_remote_list(params).await
-    }
-
-    pub async fn skills_remote_write(
-        &self,
-        params: requests::SkillsRemoteWriteParams,
-    ) -> Result<responses::SkillsRemoteWriteResult, ClientError> {
-        self.skills_remote_export(params).await
-    }
-
-    codex_forward_null_method!(config_mcp_server_reload, EmptyObject);
-    codex_forward_null_method!(account_logout, EmptyObject);
-    codex_forward_null_method!(
-        account_rate_limits_read,
-        responses::AccountRateLimitsReadResult
-    );
-    codex_forward_null_method!(
-        config_requirements_read,
-        responses::ConfigRequirementsReadResult
-    );
+    codex_rpc_table!(define_codex_forwards);
 
     pub async fn send_raw_request(
         &self,
@@ -2503,7 +2319,9 @@ mod tests {
         model_reasoning_effort_round_trips,
         ModelReasoningEffort,
         [None, Minimal, Low, Medium, High, XHigh, Max, Ultra],
-        ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
+        ]
     );
     wire_enum_round_trip_test!(
         model_reasoning_summary_round_trips,

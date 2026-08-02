@@ -17,6 +17,7 @@ use crate::error::{ClientError, IncomingClassified, RpcError, classify_incoming}
 use crate::events::{
     ServerEvent, ServerNotification, ServerRequestEvent, parse_notification, parse_server_request,
 };
+use crate::protocol::methods::codex_rpc_table;
 use crate::protocol::requests;
 use crate::protocol::responses;
 use crate::protocol::shared::{EmptyObject, RequestId};
@@ -374,21 +375,49 @@ pub struct CodexClient {
     inner: Arc<Inner>,
 }
 
-macro_rules! typed_method {
-    ($fn_name:ident, $method:literal, $params_ty:ty, $result_ty:ty) => {
+/// Expands the shared RPC method table ([`codex_rpc_table!`]) into
+/// `CodexClient`'s typed request methods. One recursive arm per row kind:
+/// `typed` (params + result), `null` (null params), and `alias`
+/// (delegates to another generated method).
+macro_rules! define_client_rpc_methods {
+    () => {};
+    (
+        $(#[$doc:meta])*
+        typed $fn_name:ident, $method:literal, $params_ty:ty, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
         pub async fn $fn_name(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
             self.request_typed_internal($method, params, None, true)
                 .await
         }
-    };
-}
 
-macro_rules! typed_null_method {
-    ($fn_name:ident, $method:literal, $result_ty:ty) => {
+        define_client_rpc_methods! { $($rest)* }
+    };
+    (
+        $(#[$doc:meta])*
+        null $fn_name:ident, $method:literal, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
         pub async fn $fn_name(&self) -> Result<$result_ty, ClientError> {
             self.request_typed_value_internal($method, Value::Null, None, true)
                 .await
         }
+
+        define_client_rpc_methods! { $($rest)* }
+    };
+    (
+        $(#[$doc:meta])*
+        alias $fn_name:ident => $target:ident, $params_ty:ty, $result_ty:ty;
+        $($rest:tt)*
+    ) => {
+        $(#[$doc])*
+        pub async fn $fn_name(&self, params: $params_ty) -> Result<$result_ty, ClientError> {
+            self.$target(params).await
+        }
+
+        define_client_rpc_methods! { $($rest)* }
     };
 }
 
@@ -520,272 +549,7 @@ impl CodexClient {
         self.send_message(json!({ "id": id, "error": error })).await
     }
 
-    typed_method!(
-        thread_start,
-        "thread/start",
-        requests::ThreadStartParams,
-        responses::ThreadResult
-    );
-    typed_method!(
-        thread_resume,
-        "thread/resume",
-        requests::ThreadResumeParams,
-        responses::ThreadResult
-    );
-    typed_method!(
-        thread_fork,
-        "thread/fork",
-        requests::ThreadForkParams,
-        responses::ThreadResult
-    );
-    typed_method!(
-        thread_archive,
-        "thread/archive",
-        requests::ThreadArchiveParams,
-        responses::ThreadArchiveResult
-    );
-    typed_method!(
-        thread_name_set,
-        "thread/name/set",
-        requests::ThreadSetNameParams,
-        responses::ThreadSetNameResult
-    );
-    typed_method!(
-        thread_unarchive,
-        "thread/unarchive",
-        requests::ThreadUnarchiveParams,
-        responses::ThreadUnarchiveResult
-    );
-    typed_method!(
-        thread_compact_start,
-        "thread/compact/start",
-        requests::ThreadCompactStartParams,
-        responses::ThreadCompactStartResult
-    );
-    typed_method!(
-        thread_background_terminals_clean,
-        "thread/backgroundTerminals/clean",
-        requests::ThreadBackgroundTerminalsCleanParams,
-        responses::ThreadBackgroundTerminalsCleanResult
-    );
-    typed_method!(
-        thread_rollback,
-        "thread/rollback",
-        requests::ThreadRollbackParams,
-        responses::ThreadRollbackResult
-    );
-    typed_method!(
-        thread_list,
-        "thread/list",
-        requests::ThreadListParams,
-        responses::ThreadListResult
-    );
-    typed_method!(
-        thread_loaded_list,
-        "thread/loaded/list",
-        requests::ThreadLoadedListParams,
-        responses::ThreadLoadedListResult
-    );
-    typed_method!(
-        thread_read,
-        "thread/read",
-        requests::ThreadReadParams,
-        responses::ThreadReadResult
-    );
-    typed_method!(
-        skills_list,
-        "skills/list",
-        requests::SkillsListParams,
-        responses::SkillsListResult
-    );
-    typed_method!(
-        skills_remote_list,
-        "skills/remote/list",
-        requests::SkillsRemoteReadParams,
-        responses::SkillsRemoteReadResult
-    );
-    typed_method!(
-        skills_remote_export,
-        "skills/remote/export",
-        requests::SkillsRemoteWriteParams,
-        responses::SkillsRemoteWriteResult
-    );
-    typed_method!(
-        app_list,
-        "app/list",
-        requests::AppsListParams,
-        responses::AppsListResult
-    );
-    typed_method!(
-        skills_config_write,
-        "skills/config/write",
-        requests::SkillsConfigWriteParams,
-        responses::SkillsConfigWriteResult
-    );
-    typed_method!(
-        turn_start,
-        "turn/start",
-        requests::TurnStartParams,
-        responses::TurnResult
-    );
-    typed_method!(
-        turn_steer,
-        "turn/steer",
-        requests::TurnSteerParams,
-        responses::TurnSteerResult
-    );
-    typed_method!(
-        turn_interrupt,
-        "turn/interrupt",
-        requests::TurnInterruptParams,
-        EmptyObject
-    );
-    typed_method!(
-        review_start,
-        "review/start",
-        requests::ReviewStartParams,
-        responses::ReviewStartResult
-    );
-    typed_method!(
-        model_list,
-        "model/list",
-        requests::ModelListParams,
-        responses::ModelListResult
-    );
-    typed_method!(
-        experimental_feature_list,
-        "experimentalFeature/list",
-        requests::ExperimentalFeatureListParams,
-        responses::ExperimentalFeatureListResult
-    );
-    typed_method!(
-        collaboration_mode_list,
-        "collaborationMode/list",
-        requests::CollaborationModeListParams,
-        responses::CollaborationModeListResult
-    );
-    typed_method!(
-        mock_experimental_method,
-        "mock/experimentalMethod",
-        requests::MockExperimentalMethodParams,
-        responses::MockExperimentalMethodResult
-    );
-    typed_method!(
-        mcp_server_oauth_login,
-        "mcpServer/oauth/login",
-        requests::McpServerOauthLoginParams,
-        responses::McpServerOauthLoginResult
-    );
-    typed_method!(
-        mcp_server_status_list,
-        "mcpServerStatus/list",
-        requests::ListMcpServerStatusParams,
-        responses::McpServerStatusListResult
-    );
-    typed_method!(
-        windows_sandbox_setup_start,
-        "windowsSandbox/setupStart",
-        requests::WindowsSandboxSetupStartParams,
-        responses::WindowsSandboxSetupStartResult
-    );
-    typed_method!(
-        account_login_start,
-        "account/login/start",
-        requests::LoginAccountParams,
-        responses::LoginAccountResult
-    );
-    typed_method!(
-        account_login_cancel,
-        "account/login/cancel",
-        requests::CancelLoginAccountParams,
-        EmptyObject
-    );
-    typed_method!(
-        feedback_upload,
-        "feedback/upload",
-        requests::FeedbackUploadParams,
-        responses::FeedbackUploadResult
-    );
-    typed_method!(
-        command_exec,
-        "command/exec",
-        requests::CommandExecParams,
-        responses::CommandExecResult
-    );
-    typed_method!(
-        config_read,
-        "config/read",
-        requests::ConfigReadParams,
-        responses::ConfigReadResult
-    );
-    typed_method!(
-        config_value_write,
-        "config/value/write",
-        requests::ConfigValueWriteParams,
-        responses::ConfigValueWriteResult
-    );
-    typed_method!(
-        config_batch_write,
-        "config/batchWrite",
-        requests::ConfigBatchWriteParams,
-        responses::ConfigBatchWriteResult
-    );
-    typed_method!(
-        account_read,
-        "account/read",
-        requests::GetAccountParams,
-        responses::GetAccountResult
-    );
-    typed_method!(
-        fuzzy_file_search_session_start,
-        "fuzzyFileSearch/sessionStart",
-        requests::FuzzyFileSearchSessionStartParams,
-        responses::FuzzyFileSearchSessionStartResult
-    );
-    typed_method!(
-        fuzzy_file_search_session_update,
-        "fuzzyFileSearch/sessionUpdate",
-        requests::FuzzyFileSearchSessionUpdateParams,
-        responses::FuzzyFileSearchSessionUpdateResult
-    );
-    typed_method!(
-        fuzzy_file_search_session_stop,
-        "fuzzyFileSearch/sessionStop",
-        requests::FuzzyFileSearchSessionStopParams,
-        responses::FuzzyFileSearchSessionStopResult
-    );
-
-    // Backward-compatible aliases for previous method names.
-    pub async fn skills_remote_read(
-        &self,
-        params: requests::SkillsRemoteReadParams,
-    ) -> Result<responses::SkillsRemoteReadResult, ClientError> {
-        self.skills_remote_list(params).await
-    }
-
-    pub async fn skills_remote_write(
-        &self,
-        params: requests::SkillsRemoteWriteParams,
-    ) -> Result<responses::SkillsRemoteWriteResult, ClientError> {
-        self.skills_remote_export(params).await
-    }
-
-    typed_null_method!(
-        config_mcp_server_reload,
-        "config/mcpServer/reload",
-        EmptyObject
-    );
-    typed_null_method!(account_logout, "account/logout", EmptyObject);
-    typed_null_method!(
-        account_rate_limits_read,
-        "account/rateLimits/read",
-        responses::AccountRateLimitsReadResult
-    );
-    typed_null_method!(
-        config_requirements_read,
-        "configRequirements/read",
-        responses::ConfigRequirementsReadResult
-    );
+    codex_rpc_table!(define_client_rpc_methods);
 
     async fn send_notification<P: Serialize>(
         &self,
@@ -1129,5 +893,100 @@ mod tests {
             message.contains("boom"),
             "unexpected error message: {message}"
         );
+    }
+
+    /// Accumulates every wire method string in the shared RPC table into a
+    /// slice. `alias` rows carry no wire string and are skipped.
+    macro_rules! collect_rpc_wire_methods {
+        (@row [$($acc:tt)*]) => { &[$($acc)*] };
+        (
+            @row [$($acc:tt)*]
+            $(#[$doc:meta])*
+            typed $fn_name:ident, $method:literal, $params_ty:ty, $result_ty:ty;
+            $($rest:tt)*
+        ) => {
+            collect_rpc_wire_methods!(@row [$($acc)* $method,] $($rest)*)
+        };
+        (
+            @row [$($acc:tt)*]
+            $(#[$doc:meta])*
+            null $fn_name:ident, $method:literal, $result_ty:ty;
+            $($rest:tt)*
+        ) => {
+            collect_rpc_wire_methods!(@row [$($acc)* $method,] $($rest)*)
+        };
+        (
+            @row [$($acc:tt)*]
+            $(#[$doc:meta])*
+            alias $fn_name:ident => $target:ident, $params_ty:ty, $result_ty:ty;
+            $($rest:tt)*
+        ) => {
+            collect_rpc_wire_methods!(@row [$($acc)*] $($rest)*)
+        };
+        ($($rows:tt)*) => { collect_rpc_wire_methods!(@row [] $($rows)*) };
+    }
+
+    #[test]
+    fn rpc_table_wire_methods_are_wellformed_and_unique() {
+        const WIRE_METHODS: &[&str] = codex_rpc_table!(collect_rpc_wire_methods);
+
+        assert_eq!(WIRE_METHODS.len(), 43, "unexpected RPC table size");
+
+        let mut seen = std::collections::HashSet::new();
+        for method in WIRE_METHODS {
+            assert!(!method.is_empty(), "empty wire method string");
+            assert!(seen.insert(*method), "duplicate wire method: {method}");
+
+            let segments: Vec<&str> = method.split('/').collect();
+            assert!(
+                segments.len() >= 2,
+                "wire method `{method}` does not have a `domain/action` shape"
+            );
+            for segment in segments {
+                assert!(
+                    !segment.is_empty() && segment.chars().all(|c| c.is_ascii_alphanumeric()),
+                    "wire method `{method}` has a malformed segment `{segment}`"
+                );
+            }
+        }
+    }
+
+    /// Compile-time proof that `Codex` and `CodexClient` expose the same RPC
+    /// surface: referencing every table row's method on both types fails to
+    /// compile if either side is missing one.
+    #[test]
+    fn codex_and_codex_client_expose_every_rpc_table_method() {
+        macro_rules! assert_rpc_parity {
+            () => {};
+            (
+                $(#[$doc:meta])*
+                typed $fn_name:ident, $method:literal, $params_ty:ty, $result_ty:ty;
+                $($rest:tt)*
+            ) => {
+                let _ = CodexClient::$fn_name;
+                let _ = Codex::$fn_name;
+                assert_rpc_parity! { $($rest)* }
+            };
+            (
+                $(#[$doc:meta])*
+                null $fn_name:ident, $method:literal, $result_ty:ty;
+                $($rest:tt)*
+            ) => {
+                let _ = CodexClient::$fn_name;
+                let _ = Codex::$fn_name;
+                assert_rpc_parity! { $($rest)* }
+            };
+            (
+                $(#[$doc:meta])*
+                alias $fn_name:ident => $target:ident, $params_ty:ty, $result_ty:ty;
+                $($rest:tt)*
+            ) => {
+                let _ = CodexClient::$fn_name;
+                let _ = Codex::$fn_name;
+                assert_rpc_parity! { $($rest)* }
+            };
+        }
+
+        codex_rpc_table!(assert_rpc_parity);
     }
 }

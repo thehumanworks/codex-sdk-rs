@@ -9,6 +9,7 @@ macro_rules! opaque_struct {
     };
 }
 
+pub mod methods;
 pub mod notifications;
 pub mod requests;
 pub mod responses;
