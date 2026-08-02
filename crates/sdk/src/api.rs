@@ -20,138 +20,129 @@ use crate::schema::OpenAiSerializable;
 const THREAD_LIST_PAGE_LIMIT: u32 = 100;
 const MAX_THREAD_LIST_PAGES: usize = 100;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApprovalMode {
-    Never,
-    OnRequest,
-    OnFailure,
-    Untrusted,
+/// Declares a wire-facing string enum from a single variant table.
+///
+/// For each enum this emits the type itself (with per-variant serde renames
+/// matching the wire spellings exactly), `as_str`, `Display`, `FromStr`
+/// (rejecting anything that is not a wire spelling), and a `VARIANTS` list of
+/// all accepted wire spellings.
+macro_rules! wire_enum {
+    (
+        $(#[$meta:meta])*
+        pub enum $name:ident {
+            $( $variant:ident => $wire:literal, )+
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub enum $name {
+            $( #[serde(rename = $wire)] $variant, )+
+        }
+
+        impl $name {
+            /// All accepted wire spellings, in declaration order.
+            pub const VARIANTS: &'static [&'static str] = &[$($wire),+];
+
+            /// Returns the wire spelling for this value.
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $( Self::$variant => $wire, )+
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = String;
+
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                match raw {
+                    $( $wire => Ok(Self::$variant), )+
+                    _ => Err(format!(
+                        concat!(
+                            "invalid ",
+                            stringify!($name),
+                            " value '{}'; expected one of: {}"
+                        ),
+                        raw,
+                        Self::VARIANTS.join(", "),
+                    )),
+                }
+            }
+        }
+    };
 }
 
-impl ApprovalMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Never => "never",
-            Self::OnRequest => "on-request",
-            Self::OnFailure => "on-failure",
-            Self::Untrusted => "untrusted",
-        }
+wire_enum! {
+    pub enum ApprovalMode {
+        Never => "never",
+        OnRequest => "on-request",
+        OnFailure => "on-failure",
+        Untrusted => "untrusted",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SandboxMode {
-    ReadOnly,
-    WorkspaceWrite,
-    DangerFullAccess,
-}
-
-impl SandboxMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "read-only",
-            Self::WorkspaceWrite => "workspace-write",
-            Self::DangerFullAccess => "danger-full-access",
-        }
+wire_enum! {
+    pub enum SandboxMode {
+        ReadOnly => "read-only",
+        WorkspaceWrite => "workspace-write",
+        DangerFullAccess => "danger-full-access",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    #[serde(rename = "xhigh")]
-    XHigh,
-}
-
-impl ModelReasoningEffort {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::XHigh => "xhigh",
-        }
+wire_enum! {
+    pub enum ModelReasoningEffort {
+        None => "none",
+        Minimal => "minimal",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        XHigh => "xhigh",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelReasoningSummary {
-    None,
-    Auto,
-    Concise,
-    Detailed,
-}
-
-impl ModelReasoningSummary {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Auto => "auto",
-            Self::Concise => "concise",
-            Self::Detailed => "detailed",
-        }
+wire_enum! {
+    pub enum ModelReasoningSummary {
+        None => "none",
+        Auto => "auto",
+        Concise => "concise",
+        Detailed => "detailed",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Personality {
-    None,
-    Friendly,
-    Pragmatic,
-}
-
-impl Personality {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Friendly => "friendly",
-            Self::Pragmatic => "pragmatic",
-        }
+wire_enum! {
+    pub enum ModelVerbosity {
+        Low => "low",
+        Medium => "medium",
+        High => "high",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum WebSearchMode {
-    Disabled,
-    Cached,
-    Live,
-}
-
-impl WebSearchMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::Cached => "cached",
-            Self::Live => "live",
-        }
+wire_enum! {
+    pub enum Personality {
+        None => "none",
+        Friendly => "friendly",
+        Pragmatic => "pragmatic",
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CollaborationModeKind {
-    Plan,
-    Default,
+wire_enum! {
+    pub enum WebSearchMode {
+        Disabled => "disabled",
+        Cached => "cached",
+        Live => "live",
+    }
 }
 
-impl CollaborationModeKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Plan => "plan",
-            Self::Default => "default",
-        }
+wire_enum! {
+    pub enum CollaborationModeKind {
+        Plan => "plan",
+        Default => "default",
     }
 }
 
@@ -282,227 +273,140 @@ impl From<&String> for ResumeThread {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ThreadOptions {
-    pub model: Option<String>,
-    pub model_provider: Option<String>,
-    pub sandbox_mode: Option<SandboxMode>,
-    pub sandbox_policy: Option<Value>,
-    pub working_directory: Option<String>,
-    pub skip_git_repo_check: Option<bool>,
-    pub model_reasoning_effort: Option<ModelReasoningEffort>,
-    pub model_reasoning_summary: Option<ModelReasoningSummary>,
-    pub network_access_enabled: Option<bool>,
-    pub web_search_mode: Option<WebSearchMode>,
-    pub web_search_enabled: Option<bool>,
-    pub approval_policy: Option<ApprovalMode>,
-    pub additional_directories: Option<Vec<String>>,
-    pub personality: Option<Personality>,
-    pub base_instructions: Option<String>,
-    pub developer_instructions: Option<String>,
-    pub ephemeral: Option<bool>,
-    pub collaboration_mode: Option<CollaborationMode>,
-    pub config: Option<Map<String, Value>>,
-    pub dynamic_tools: Option<Vec<DynamicToolSpec>>,
-    pub experimental_raw_events: Option<bool>,
-    pub persist_extended_history: Option<bool>,
+/// Declares an options struct and its builder from a single
+/// `(setter-kind, field, type)` table.
+///
+/// Setter kinds:
+/// - `into_string`: setter takes `impl Into<String>`
+/// - `copy`: setter takes the field type by value (for `Copy` types)
+/// - `value`: setter takes the field type by value (for owned types)
+/// - `bool`: setter takes `bool`
+/// - `vec_push <method>`: whole-`Vec` setter plus a per-entry push method
+/// - `map_insert <method>`: whole-`Map` setter plus a per-key insert method
+macro_rules! options_builder {
+    (
+        $options:ident, $builder:ident, {
+            $( [$($kind:tt)+] $field:ident: $ty:ty; )+
+        }
+    ) => {
+        #[derive(Debug, Clone, Default)]
+        pub struct $options {
+            $( pub $field: Option<$ty>, )+
+        }
+
+        impl $options {
+            pub fn builder() -> $builder {
+                $builder::new()
+            }
+        }
+
+        #[derive(Debug, Clone, Default)]
+        pub struct $builder {
+            options: $options,
+        }
+
+        impl $builder {
+            pub fn new() -> Self {
+                Self::default()
+            }
+
+            pub fn build(self) -> $options {
+                self.options
+            }
+
+            $( options_builder!(@setter [$($kind)+] $field: $ty); )+
+        }
+    };
+    (@setter [into_string] $field:ident: $ty:ty) => {
+        pub fn $field(mut self, $field: impl Into<String>) -> Self {
+            self.options.$field = Some($field.into());
+            self
+        }
+    };
+    (@setter [copy] $field:ident: $ty:ty) => {
+        options_builder!(@setter [value] $field: $ty);
+    };
+    (@setter [value] $field:ident: $ty:ty) => {
+        pub fn $field(mut self, $field: $ty) -> Self {
+            self.options.$field = Some($field);
+            self
+        }
+    };
+    (@setter [bool] $field:ident: $ty:ty) => {
+        pub fn $field(mut self, enabled: bool) -> Self {
+            self.options.$field = Some(enabled);
+            self
+        }
+    };
+    (@setter [vec_push $push_method:ident] $field:ident: $ty:ty) => {
+        options_builder!(@setter [value] $field: $ty);
+
+        pub fn $push_method(mut self, entry: impl Into<String>) -> Self {
+            self.options
+                .$field
+                .get_or_insert_with(Vec::new)
+                .push(entry.into());
+            self
+        }
+    };
+    (@setter [map_insert $insert_method:ident] $field:ident: $ty:ty) => {
+        options_builder!(@setter [value] $field: $ty);
+
+        pub fn $insert_method(mut self, key: impl Into<String>, value: Value) -> Self {
+            self.options
+                .$field
+                .get_or_insert_with(Map::new)
+                .insert(key.into(), value);
+            self
+        }
+    };
 }
 
-impl ThreadOptions {
-    pub fn builder() -> ThreadOptionsBuilder {
-        ThreadOptionsBuilder::new()
-    }
-}
+options_builder!(ThreadOptions, ThreadOptionsBuilder, {
+    [into_string] model: String;
+    [into_string] model_provider: String;
+    [copy] sandbox_mode: SandboxMode;
+    [value] sandbox_policy: Value;
+    [into_string] working_directory: String;
+    [bool] skip_git_repo_check: bool;
+    [copy] model_reasoning_effort: ModelReasoningEffort;
+    [copy] model_reasoning_summary: ModelReasoningSummary;
+    [bool] network_access_enabled: bool;
+    [copy] web_search_mode: WebSearchMode;
+    [bool] web_search_enabled: bool;
+    [copy] approval_policy: ApprovalMode;
+    [vec_push add_directory] additional_directories: Vec<String>;
+    [copy] personality: Personality;
+    [into_string] base_instructions: String;
+    [into_string] developer_instructions: String;
+    [bool] ephemeral: bool;
+    [value] collaboration_mode: CollaborationMode;
+    [map_insert insert_config] config: Map<String, Value>;
+    [value] dynamic_tools: Vec<DynamicToolSpec>;
+    [bool] experimental_raw_events: bool;
+    [bool] persist_extended_history: bool;
+});
 
-#[derive(Debug, Clone, Default)]
-pub struct ThreadOptionsBuilder {
-    options: ThreadOptions,
-}
-
-impl ThreadOptionsBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn build(self) -> ThreadOptions {
-        self.options
-    }
-
-    pub fn model(mut self, model: impl Into<String>) -> Self {
-        self.options.model = Some(model.into());
-        self
-    }
-
-    pub fn model_provider(mut self, model_provider: impl Into<String>) -> Self {
-        self.options.model_provider = Some(model_provider.into());
-        self
-    }
-
-    pub fn sandbox_mode(mut self, sandbox_mode: SandboxMode) -> Self {
-        self.options.sandbox_mode = Some(sandbox_mode);
-        self
-    }
-
-    pub fn sandbox_policy(mut self, sandbox_policy: Value) -> Self {
-        self.options.sandbox_policy = Some(sandbox_policy);
-        self
-    }
-
-    pub fn working_directory(mut self, working_directory: impl Into<String>) -> Self {
-        self.options.working_directory = Some(working_directory.into());
-        self
-    }
-
-    pub fn skip_git_repo_check(mut self, enabled: bool) -> Self {
-        self.options.skip_git_repo_check = Some(enabled);
-        self
-    }
-
-    pub fn model_reasoning_effort(mut self, model_reasoning_effort: ModelReasoningEffort) -> Self {
-        self.options.model_reasoning_effort = Some(model_reasoning_effort);
-        self
-    }
-
-    pub fn model_reasoning_summary(
-        mut self,
-        model_reasoning_summary: ModelReasoningSummary,
-    ) -> Self {
-        self.options.model_reasoning_summary = Some(model_reasoning_summary);
-        self
-    }
-
-    pub fn network_access_enabled(mut self, enabled: bool) -> Self {
-        self.options.network_access_enabled = Some(enabled);
-        self
-    }
-
-    pub fn web_search_mode(mut self, web_search_mode: WebSearchMode) -> Self {
-        self.options.web_search_mode = Some(web_search_mode);
-        self
-    }
-
-    pub fn web_search_enabled(mut self, enabled: bool) -> Self {
-        self.options.web_search_enabled = Some(enabled);
-        self
-    }
-
-    pub fn approval_policy(mut self, approval_policy: ApprovalMode) -> Self {
-        self.options.approval_policy = Some(approval_policy);
-        self
-    }
-
-    pub fn additional_directories(mut self, additional_directories: Vec<String>) -> Self {
-        self.options.additional_directories = Some(additional_directories);
-        self
-    }
-
-    pub fn add_directory(mut self, directory: impl Into<String>) -> Self {
-        self.options
-            .additional_directories
-            .get_or_insert_with(Vec::new)
-            .push(directory.into());
-        self
-    }
-
-    pub fn personality(mut self, personality: Personality) -> Self {
-        self.options.personality = Some(personality);
-        self
-    }
-
-    pub fn base_instructions(mut self, base_instructions: impl Into<String>) -> Self {
-        self.options.base_instructions = Some(base_instructions.into());
-        self
-    }
-
-    pub fn developer_instructions(mut self, developer_instructions: impl Into<String>) -> Self {
-        self.options.developer_instructions = Some(developer_instructions.into());
-        self
-    }
-
-    pub fn ephemeral(mut self, ephemeral: bool) -> Self {
-        self.options.ephemeral = Some(ephemeral);
-        self
-    }
-
-    pub fn collaboration_mode(mut self, collaboration_mode: CollaborationMode) -> Self {
-        self.options.collaboration_mode = Some(collaboration_mode);
-        self
-    }
-
-    pub fn config(mut self, config: Map<String, Value>) -> Self {
-        self.options.config = Some(config);
-        self
-    }
-
-    pub fn insert_config(mut self, key: impl Into<String>, value: Value) -> Self {
-        self.options
-            .config
-            .get_or_insert_with(Map::new)
-            .insert(key.into(), value);
-        self
-    }
-
-    pub fn dynamic_tools(mut self, dynamic_tools: Vec<DynamicToolSpec>) -> Self {
-        self.options.dynamic_tools = Some(dynamic_tools);
-        self
-    }
-
-    pub fn experimental_raw_events(mut self, enabled: bool) -> Self {
-        self.options.experimental_raw_events = Some(enabled);
-        self
-    }
-
-    pub fn persist_extended_history(mut self, enabled: bool) -> Self {
-        self.options.persist_extended_history = Some(enabled);
-        self
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TurnOptions {
-    pub output_schema: Option<Value>,
-    pub working_directory: Option<String>,
-    pub model: Option<String>,
-    pub model_provider: Option<String>,
-    pub model_reasoning_effort: Option<ModelReasoningEffort>,
-    pub model_reasoning_summary: Option<ModelReasoningSummary>,
-    pub personality: Option<Personality>,
-    pub approval_policy: Option<ApprovalMode>,
-    pub sandbox_policy: Option<Value>,
-    pub collaboration_mode: Option<CollaborationMode>,
-    pub skip_git_repo_check: Option<bool>,
-    pub web_search_mode: Option<WebSearchMode>,
-    pub web_search_enabled: Option<bool>,
-    pub network_access_enabled: Option<bool>,
-    pub additional_directories: Option<Vec<String>>,
-    pub extra: Option<Map<String, Value>>,
-}
-
-impl TurnOptions {
-    pub fn builder() -> TurnOptionsBuilder {
-        TurnOptionsBuilder::new()
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct TurnOptionsBuilder {
-    options: TurnOptions,
-}
+options_builder!(TurnOptions, TurnOptionsBuilder, {
+    [value] output_schema: Value;
+    [into_string] working_directory: String;
+    [into_string] model: String;
+    [into_string] model_provider: String;
+    [copy] model_reasoning_effort: ModelReasoningEffort;
+    [copy] model_reasoning_summary: ModelReasoningSummary;
+    [copy] personality: Personality;
+    [copy] approval_policy: ApprovalMode;
+    [value] sandbox_policy: Value;
+    [value] collaboration_mode: CollaborationMode;
+    [bool] skip_git_repo_check: bool;
+    [copy] web_search_mode: WebSearchMode;
+    [bool] web_search_enabled: bool;
+    [bool] network_access_enabled: bool;
+    [vec_push add_directory] additional_directories: Vec<String>;
+    [map_insert insert_extra] extra: Map<String, Value>;
+});
 
 impl TurnOptionsBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn build(self) -> TurnOptions {
-        self.options
-    }
-
-    pub fn output_schema(mut self, output_schema: Value) -> Self {
-        self.options.output_schema = Some(output_schema);
-        self
-    }
-
     pub fn output_schema_for<T: OpenAiSerializable>(mut self) -> Self {
         self.options.output_schema = Some(T::openai_output_schema());
         self
@@ -510,100 +414,6 @@ impl TurnOptionsBuilder {
 
     pub fn clear_output_schema(mut self) -> Self {
         self.options.output_schema = None;
-        self
-    }
-
-    pub fn working_directory(mut self, working_directory: impl Into<String>) -> Self {
-        self.options.working_directory = Some(working_directory.into());
-        self
-    }
-
-    pub fn model(mut self, model: impl Into<String>) -> Self {
-        self.options.model = Some(model.into());
-        self
-    }
-
-    pub fn model_provider(mut self, model_provider: impl Into<String>) -> Self {
-        self.options.model_provider = Some(model_provider.into());
-        self
-    }
-
-    pub fn model_reasoning_effort(mut self, model_reasoning_effort: ModelReasoningEffort) -> Self {
-        self.options.model_reasoning_effort = Some(model_reasoning_effort);
-        self
-    }
-
-    pub fn model_reasoning_summary(
-        mut self,
-        model_reasoning_summary: ModelReasoningSummary,
-    ) -> Self {
-        self.options.model_reasoning_summary = Some(model_reasoning_summary);
-        self
-    }
-
-    pub fn personality(mut self, personality: Personality) -> Self {
-        self.options.personality = Some(personality);
-        self
-    }
-
-    pub fn approval_policy(mut self, approval_policy: ApprovalMode) -> Self {
-        self.options.approval_policy = Some(approval_policy);
-        self
-    }
-
-    pub fn sandbox_policy(mut self, sandbox_policy: Value) -> Self {
-        self.options.sandbox_policy = Some(sandbox_policy);
-        self
-    }
-
-    pub fn collaboration_mode(mut self, collaboration_mode: CollaborationMode) -> Self {
-        self.options.collaboration_mode = Some(collaboration_mode);
-        self
-    }
-
-    pub fn skip_git_repo_check(mut self, enabled: bool) -> Self {
-        self.options.skip_git_repo_check = Some(enabled);
-        self
-    }
-
-    pub fn web_search_mode(mut self, web_search_mode: WebSearchMode) -> Self {
-        self.options.web_search_mode = Some(web_search_mode);
-        self
-    }
-
-    pub fn web_search_enabled(mut self, enabled: bool) -> Self {
-        self.options.web_search_enabled = Some(enabled);
-        self
-    }
-
-    pub fn network_access_enabled(mut self, enabled: bool) -> Self {
-        self.options.network_access_enabled = Some(enabled);
-        self
-    }
-
-    pub fn additional_directories(mut self, additional_directories: Vec<String>) -> Self {
-        self.options.additional_directories = Some(additional_directories);
-        self
-    }
-
-    pub fn add_directory(mut self, directory: impl Into<String>) -> Self {
-        self.options
-            .additional_directories
-            .get_or_insert_with(Vec::new)
-            .push(directory.into());
-        self
-    }
-
-    pub fn extra(mut self, extra: Map<String, Value>) -> Self {
-        self.options.extra = Some(extra);
-        self
-    }
-
-    pub fn insert_extra(mut self, key: impl Into<String>, value: Value) -> Self {
-        self.options
-            .extra
-            .get_or_insert_with(Map::new)
-            .insert(key.into(), value);
         self
     }
 }
@@ -1558,20 +1368,18 @@ impl Thread {
 
         let (tx, rx) = mpsc::channel(256);
 
-        if let Some(started_thread_id) = emit_thread_started
-            && tx
-                .send(Ok(ThreadEvent::ThreadStarted {
-                    thread_id: started_thread_id,
-                }))
-                .await
-                .is_err()
-        {
-            return Err(ClientError::TransportClosed);
+        // `rx` is held locally until `StreamedTurn` is returned, so these
+        // sends cannot fail.
+        if let Some(started_thread_id) = emit_thread_started {
+            tx.send(Ok(ThreadEvent::ThreadStarted {
+                thread_id: started_thread_id,
+            }))
+            .await
+            .expect("receiver held locally");
         }
-
-        if tx.send(Ok(ThreadEvent::TurnStarted)).await.is_err() {
-            return Err(ClientError::TransportClosed);
-        }
+        tx.send(Ok(ThreadEvent::TurnStarted))
+            .await
+            .expect("receiver held locally");
 
         let task = tokio::spawn(async move {
             pump_turn_events(server_events, tx, thread_id, turn_id).await;
@@ -1645,6 +1453,21 @@ impl Thread {
     }
 }
 
+/// Converts a streaming delta notification into an `ItemUpdated` event, or
+/// `None` when the delta carries no text.
+fn delta_item_updated(
+    delta: crate::protocol::notifications::DeltaNotification,
+    build_item: fn(id: String, text: String) -> ThreadItem,
+) -> Option<ThreadEvent> {
+    let text = delta.delta.or(delta.text).unwrap_or_default();
+    if text.is_empty() {
+        return None;
+    }
+    Some(ThreadEvent::ItemUpdated {
+        item: build_item(delta.item_id.unwrap_or_default(), text),
+    })
+}
+
 async fn pump_turn_events(
     mut server_events: tokio::sync::broadcast::Receiver<ServerEvent>,
     tx: mpsc::Sender<Result<ThreadEvent, ClientError>>,
@@ -1653,12 +1476,22 @@ async fn pump_turn_events(
 ) {
     let mut latest_usage: Option<Usage> = None;
 
+    // Sends the event to the consumer, breaking out of the pump loop when the
+    // consumer is gone.
+    macro_rules! send_or_break {
+        ($event:expr) => {
+            if tx.send($event).await.is_err() {
+                break;
+            }
+        };
+    }
+
     loop {
         let next = server_events.recv().await;
         let server_event = match next {
             Ok(event) => event,
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                let _ = tx.send(Err(ClientError::TransportClosed)).await;
+                send_or_break!(Err(ClientError::TransportClosed));
                 break;
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -1671,87 +1504,51 @@ async fn pump_turn_events(
                 ServerNotification::ItemStarted(payload)
                     if matches_target_from_extra(&payload.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    if tx
-                        .send(Ok(ThreadEvent::ItemStarted {
-                            item: parse_thread_item(payload.item),
-                        }))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    send_or_break!(Ok(ThreadEvent::ItemStarted {
+                        item: parse_thread_item(payload.item),
+                    }));
                 }
                 ServerNotification::ItemCompleted(payload)
                     if matches_target_from_extra(&payload.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    if tx
-                        .send(Ok(ThreadEvent::ItemCompleted {
-                            item: parse_thread_item(payload.item),
-                        }))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    send_or_break!(Ok(ThreadEvent::ItemCompleted {
+                        item: parse_thread_item(payload.item),
+                    }));
                 }
                 ServerNotification::ItemAgentMessageDelta(delta)
                     if matches_target_from_extra(&delta.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    let text = delta.delta.or(delta.text).unwrap_or_default();
-                    if text.is_empty() {
+                    let Some(event) = delta_item_updated(delta, |id, text| {
+                        ThreadItem::AgentMessage(AgentMessageItem {
+                            id,
+                            text,
+                            phase: None,
+                        })
+                    }) else {
                         continue;
-                    }
-                    let item = ThreadItem::AgentMessage(AgentMessageItem {
-                        id: delta.item_id.unwrap_or_default(),
-                        text,
-                        phase: None,
-                    });
-                    if tx
-                        .send(Ok(ThreadEvent::ItemUpdated { item }))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    };
+                    send_or_break!(Ok(event));
                 }
                 ServerNotification::ItemPlanDelta(delta)
                     if matches_target_from_extra(&delta.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    let text = delta.delta.or(delta.text).unwrap_or_default();
-                    if text.is_empty() {
+                    let Some(event) = delta_item_updated(delta, |id, text| {
+                        ThreadItem::Plan(PlanItem { id, text })
+                    }) else {
                         continue;
-                    }
-                    let item = ThreadItem::Plan(PlanItem {
-                        id: delta.item_id.unwrap_or_default(),
-                        text,
-                    });
-                    if tx
-                        .send(Ok(ThreadEvent::ItemUpdated { item }))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    };
+                    send_or_break!(Ok(event));
                 }
                 ServerNotification::ItemReasoningSummaryTextDelta(delta)
                 | ServerNotification::ItemReasoningTextDelta(delta)
                     if matches_target_from_extra(&delta.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    let text = delta.delta.or(delta.text).unwrap_or_default();
-                    if text.is_empty() {
+                    let Some(event) = delta_item_updated(delta, |id, text| {
+                        ThreadItem::Reasoning(ReasoningItem { id, text })
+                    }) else {
                         continue;
-                    }
-                    let item = ThreadItem::Reasoning(ReasoningItem {
-                        id: delta.item_id.unwrap_or_default(),
-                        text,
-                    });
-                    if tx
-                        .send(Ok(ThreadEvent::ItemUpdated { item }))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                    };
+                    send_or_break!(Ok(event));
                 }
                 ServerNotification::TurnCompleted(payload)
                     if payload.turn.id == turn_id
@@ -1768,17 +1565,15 @@ async fn pump_turn_events(
                             .error
                             .map(|error| error.message)
                             .unwrap_or_else(|| "turn failed".to_string());
-                        let _ = tx
-                            .send(Ok(ThreadEvent::TurnFailed {
-                                error: ThreadError { message },
-                            }))
-                            .await;
+                        send_or_break!(Ok(ThreadEvent::TurnFailed {
+                            error: ThreadError { message },
+                        }));
                         break;
                     }
 
                     let usage = parse_usage_from_turn_extra(&payload.turn.extra)
                         .or_else(|| latest_usage.clone());
-                    let _ = tx.send(Ok(ThreadEvent::TurnCompleted { usage })).await;
+                    send_or_break!(Ok(ThreadEvent::TurnCompleted { usage }));
                     break;
                 }
                 ServerNotification::ThreadTokenUsageUpdated(payload)
@@ -1804,16 +1599,14 @@ async fn pump_turn_events(
                 ServerNotification::Error(payload)
                     if matches_target_from_extra(&payload.extra, &thread_id, Some(&turn_id)) =>
                 {
-                    let _ = tx
-                        .send(Ok(ThreadEvent::Error {
-                            message: payload.error.message,
-                        }))
-                        .await;
+                    send_or_break!(Ok(ThreadEvent::Error {
+                        message: payload.error.message,
+                    }));
                 }
                 _ => {}
             },
             ServerEvent::TransportClosed => {
-                let _ = tx.send(Err(ClientError::TransportClosed)).await;
+                send_or_break!(Err(ClientError::TransportClosed));
                 break;
             }
             ServerEvent::ServerRequest(_) => {}
@@ -1891,24 +1684,114 @@ fn parse_timestamp(value: Option<&Value>) -> Option<i64> {
     }
 }
 
-fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartParams {
-    let mut extra = Map::new();
-    if let Some(skip) = options.skip_git_repo_check {
+/// Options shared by thread/start, thread/resume, and turn/start wire
+/// encoding, after per-turn overrides (if any) have been merged over the
+/// thread-level defaults.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ResolvedOptions {
+    model: Option<String>,
+    model_provider: Option<String>,
+    working_directory: Option<String>,
+    model_reasoning_effort: Option<ModelReasoningEffort>,
+    model_reasoning_summary: Option<ModelReasoningSummary>,
+    personality: Option<Personality>,
+    approval_policy: Option<ApprovalMode>,
+    sandbox_policy: Option<Value>,
+    skip_git_repo_check: Option<bool>,
+    web_search_mode: Option<WebSearchMode>,
+    web_search_enabled: Option<bool>,
+    network_access_enabled: Option<bool>,
+    additional_directories: Option<Vec<String>>,
+    collaboration_mode: Option<CollaborationMode>,
+}
+
+impl ResolvedOptions {
+    fn from_thread(options: &ThreadOptions) -> Self {
+        Self {
+            model: options.model.clone(),
+            model_provider: options.model_provider.clone(),
+            working_directory: options.working_directory.clone(),
+            model_reasoning_effort: options.model_reasoning_effort,
+            model_reasoning_summary: options.model_reasoning_summary,
+            personality: options.personality,
+            approval_policy: options.approval_policy,
+            sandbox_policy: options.sandbox_policy.clone(),
+            skip_git_repo_check: options.skip_git_repo_check,
+            web_search_mode: options.web_search_mode,
+            web_search_enabled: options.web_search_enabled,
+            network_access_enabled: options.network_access_enabled,
+            additional_directories: options.additional_directories.clone(),
+            collaboration_mode: options.collaboration_mode.clone(),
+        }
+    }
+
+    /// Merges per-turn overrides over thread-level defaults: any field set on
+    /// `turn_options` wins; otherwise the thread-level value applies.
+    fn merge(options: &ThreadOptions, turn_options: &TurnOptions) -> Self {
+        Self {
+            model: turn_options.model.clone().or_else(|| options.model.clone()),
+            model_provider: turn_options
+                .model_provider
+                .clone()
+                .or_else(|| options.model_provider.clone()),
+            working_directory: turn_options
+                .working_directory
+                .clone()
+                .or_else(|| options.working_directory.clone()),
+            model_reasoning_effort: turn_options
+                .model_reasoning_effort
+                .or(options.model_reasoning_effort),
+            model_reasoning_summary: turn_options
+                .model_reasoning_summary
+                .or(options.model_reasoning_summary),
+            personality: turn_options.personality.or(options.personality),
+            approval_policy: turn_options.approval_policy.or(options.approval_policy),
+            sandbox_policy: turn_options
+                .sandbox_policy
+                .clone()
+                .or_else(|| options.sandbox_policy.clone()),
+            skip_git_repo_check: turn_options
+                .skip_git_repo_check
+                .or(options.skip_git_repo_check),
+            web_search_mode: turn_options.web_search_mode.or(options.web_search_mode),
+            web_search_enabled: turn_options
+                .web_search_enabled
+                .or(options.web_search_enabled),
+            network_access_enabled: turn_options
+                .network_access_enabled
+                .or(options.network_access_enabled),
+            additional_directories: turn_options
+                .additional_directories
+                .clone()
+                .or_else(|| options.additional_directories.clone()),
+            collaboration_mode: turn_options
+                .collaboration_mode
+                .clone()
+                .or_else(|| options.collaboration_mode.clone()),
+        }
+    }
+}
+
+/// Inserts the extra-map keys shared by thread/start, thread/resume, and
+/// turn/start. Per-method extras (e.g. `sandboxPolicy` on resume) are inserted
+/// by the individual builders.
+fn insert_common_extras(extra: &mut Map<String, Value>, resolved: &ResolvedOptions) {
+    if let Some(skip) = resolved.skip_git_repo_check {
         extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
     }
-    if let Some(mode) = options.web_search_mode {
+    if let Some(mode) = resolved.web_search_mode {
         extra.insert(
             "webSearchMode".to_string(),
             Value::String(mode.as_str().to_string()),
         );
     }
-    if let Some(enabled) = options.web_search_enabled {
+    if let Some(enabled) = resolved.web_search_enabled {
         extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
     }
-    if let Some(network) = options.network_access_enabled {
+    if let Some(network) = resolved.network_access_enabled {
         extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
     }
-    if let Some(additional) = &options.additional_directories {
+    if let Some(additional) = &resolved.additional_directories {
         extra.insert(
             "additionalDirectories".to_string(),
             Value::Array(
@@ -1919,18 +1802,33 @@ fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartPa
             ),
         );
     }
+    if let Some(collaboration_mode) = &resolved.collaboration_mode {
+        extra.insert(
+            "collaborationMode".to_string(),
+            collaboration_mode.as_value(),
+        );
+    }
+}
+
+fn dynamic_tools_value(dynamic_tools: &[DynamicToolSpec]) -> Value {
+    Value::Array(
+        dynamic_tools
+            .iter()
+            .map(DynamicToolSpec::as_value)
+            .collect(),
+    )
+}
+
+fn build_thread_start_params(options: &ThreadOptions) -> requests::ThreadStartParams {
+    let mut extra = Map::new();
+    insert_common_extras(&mut extra, &ResolvedOptions::from_thread(options));
     if let Some(config) = &options.config {
         extra.insert("config".to_string(), Value::Object(config.clone()));
     }
     if let Some(dynamic_tools) = &options.dynamic_tools {
         extra.insert(
             "dynamicTools".to_string(),
-            Value::Array(
-                dynamic_tools
-                    .iter()
-                    .map(DynamicToolSpec::as_value)
-                    .collect(),
-            ),
+            dynamic_tools_value(dynamic_tools),
         );
     }
     if let Some(enabled) = options.experimental_raw_events {
@@ -1968,32 +1866,7 @@ fn build_thread_resume_params(
     options: &ThreadOptions,
 ) -> requests::ThreadResumeParams {
     let mut extra = Map::new();
-    if let Some(skip) = options.skip_git_repo_check {
-        extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
-    }
-    if let Some(mode) = options.web_search_mode {
-        extra.insert(
-            "webSearchMode".to_string(),
-            Value::String(mode.as_str().to_string()),
-        );
-    }
-    if let Some(enabled) = options.web_search_enabled {
-        extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
-    }
-    if let Some(network) = options.network_access_enabled {
-        extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
-    }
-    if let Some(additional) = &options.additional_directories {
-        extra.insert(
-            "additionalDirectories".to_string(),
-            Value::Array(
-                additional
-                    .iter()
-                    .map(|entry| Value::String(entry.clone()))
-                    .collect(),
-            ),
-        );
-    }
+    insert_common_extras(&mut extra, &ResolvedOptions::from_thread(options));
     if let Some(policy) = &options.sandbox_policy {
         extra.insert("sandboxPolicy".to_string(), policy.clone());
     }
@@ -2012,21 +1885,10 @@ fn build_thread_resume_params(
     if let Some(ephemeral) = options.ephemeral {
         extra.insert("ephemeral".to_string(), Value::Bool(ephemeral));
     }
-    if let Some(collaboration_mode) = &options.collaboration_mode {
-        extra.insert(
-            "collaborationMode".to_string(),
-            collaboration_mode.as_value(),
-        );
-    }
     if let Some(dynamic_tools) = &options.dynamic_tools {
         extra.insert(
             "dynamicTools".to_string(),
-            Value::Array(
-                dynamic_tools
-                    .iter()
-                    .map(DynamicToolSpec::as_value)
-                    .collect(),
-            ),
+            dynamic_tools_value(dynamic_tools),
         );
     }
     if let Some(enabled) = options.experimental_raw_events {
@@ -2059,56 +1921,10 @@ fn build_turn_start_params(
     options: &ThreadOptions,
     turn_options: &TurnOptions,
 ) -> requests::TurnStartParams {
+    let resolved = ResolvedOptions::merge(options, turn_options);
+
     let mut extra = Map::new();
-    if let Some(skip) = turn_options
-        .skip_git_repo_check
-        .or(options.skip_git_repo_check)
-    {
-        extra.insert("skipGitRepoCheck".to_string(), Value::Bool(skip));
-    }
-    if let Some(mode) = turn_options.web_search_mode.or(options.web_search_mode) {
-        extra.insert(
-            "webSearchMode".to_string(),
-            Value::String(mode.as_str().to_string()),
-        );
-    }
-    if let Some(enabled) = turn_options
-        .web_search_enabled
-        .or(options.web_search_enabled)
-    {
-        extra.insert("webSearchEnabled".to_string(), Value::Bool(enabled));
-    }
-    if let Some(network) = turn_options
-        .network_access_enabled
-        .or(options.network_access_enabled)
-    {
-        extra.insert("networkAccessEnabled".to_string(), Value::Bool(network));
-    }
-    if let Some(additional) = turn_options
-        .additional_directories
-        .as_ref()
-        .or(options.additional_directories.as_ref())
-    {
-        extra.insert(
-            "additionalDirectories".to_string(),
-            Value::Array(
-                additional
-                    .iter()
-                    .map(|entry| Value::String(entry.clone()))
-                    .collect(),
-            ),
-        );
-    }
-    if let Some(collaboration_mode) = turn_options
-        .collaboration_mode
-        .as_ref()
-        .or(options.collaboration_mode.as_ref())
-    {
-        extra.insert(
-            "collaborationMode".to_string(),
-            collaboration_mode.as_value(),
-        );
-    }
+    insert_common_extras(&mut extra, &resolved);
     if let Some(extra_overrides) = &turn_options.extra {
         for (key, value) in extra_overrides {
             extra.insert(key.clone(), value.clone());
@@ -2118,36 +1934,21 @@ fn build_turn_start_params(
     requests::TurnStartParams {
         thread_id: thread_id.to_string(),
         input: normalize_input(input),
-        cwd: turn_options
-            .working_directory
-            .clone()
-            .or_else(|| options.working_directory.clone()),
-        model: turn_options.model.clone().or_else(|| options.model.clone()),
-        model_provider: turn_options
-            .model_provider
-            .clone()
-            .or_else(|| options.model_provider.clone()),
-        effort: turn_options
+        cwd: resolved.working_directory,
+        model: resolved.model,
+        model_provider: resolved.model_provider,
+        effort: resolved
             .model_reasoning_effort
-            .or(options.model_reasoning_effort)
             .map(|effort| effort.as_str().to_string()),
-        summary: turn_options
+        summary: resolved
             .model_reasoning_summary
-            .or(options.model_reasoning_summary)
             .map(|summary| summary.as_str().to_string()),
-        personality: turn_options
-            .personality
-            .or(options.personality)
-            .map(|value| value.as_str().to_string()),
+        personality: resolved.personality.map(|value| value.as_str().to_string()),
         output_schema: turn_options.output_schema.clone(),
-        approval_policy: turn_options
+        approval_policy: resolved
             .approval_policy
-            .or(options.approval_policy)
             .map(|mode| mode.as_str().to_string()),
-        sandbox_policy: turn_options
-            .sandbox_policy
-            .clone()
-            .or_else(|| options.sandbox_policy.clone()),
+        sandbox_policy: resolved.sandbox_policy,
         extra,
     }
 }
@@ -2655,6 +2456,84 @@ mod tests {
         answer: String,
     }
 
+    macro_rules! wire_enum_round_trip_test {
+        ($test_name:ident, $ty:ident, [$($variant:ident),+ $(,)?], [$($wire:literal),+ $(,)?]) => {
+            #[test]
+            fn $test_name() {
+                assert_eq!($ty::VARIANTS, [$($wire),+]);
+
+                let values = [$($ty::$variant),+];
+                assert_eq!(values.len(), $ty::VARIANTS.len());
+                for value in values {
+                    assert_eq!(value.as_str().parse::<$ty>(), Ok(value));
+                    assert_eq!(
+                        serde_json::to_value(value)
+                            .expect("serialize wire enum")
+                            .as_str(),
+                        Some(value.as_str())
+                    );
+                    assert_eq!(value.to_string(), value.as_str());
+                }
+
+                let error = "not-a-real-value"
+                    .parse::<$ty>()
+                    .expect_err("unknown wire value must be rejected");
+                for wire in $ty::VARIANTS {
+                    assert!(error.contains(wire), "error {error:?} must list {wire}");
+                }
+            }
+        };
+    }
+
+    wire_enum_round_trip_test!(
+        approval_mode_round_trips,
+        ApprovalMode,
+        [Never, OnRequest, OnFailure, Untrusted],
+        ["never", "on-request", "on-failure", "untrusted"]
+    );
+    wire_enum_round_trip_test!(
+        sandbox_mode_round_trips,
+        SandboxMode,
+        [ReadOnly, WorkspaceWrite, DangerFullAccess],
+        ["read-only", "workspace-write", "danger-full-access"]
+    );
+    wire_enum_round_trip_test!(
+        model_reasoning_effort_round_trips,
+        ModelReasoningEffort,
+        [None, Minimal, Low, Medium, High, XHigh],
+        ["none", "minimal", "low", "medium", "high", "xhigh"]
+    );
+    wire_enum_round_trip_test!(
+        model_reasoning_summary_round_trips,
+        ModelReasoningSummary,
+        [None, Auto, Concise, Detailed],
+        ["none", "auto", "concise", "detailed"]
+    );
+    wire_enum_round_trip_test!(
+        model_verbosity_round_trips,
+        ModelVerbosity,
+        [Low, Medium, High],
+        ["low", "medium", "high"]
+    );
+    wire_enum_round_trip_test!(
+        personality_round_trips,
+        Personality,
+        [None, Friendly, Pragmatic],
+        ["none", "friendly", "pragmatic"]
+    );
+    wire_enum_round_trip_test!(
+        web_search_mode_round_trips,
+        WebSearchMode,
+        [Disabled, Cached, Live],
+        ["disabled", "cached", "live"]
+    );
+    wire_enum_round_trip_test!(
+        collaboration_mode_kind_round_trips,
+        CollaborationModeKind,
+        [Plan, Default],
+        ["plan", "default"]
+    );
+
     #[test]
     fn public_string_enums_serde_as_codex_config_values() {
         #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -2999,6 +2878,146 @@ collaboration_mode = "plan"
         pump.abort();
     }
 
+    #[tokio::test]
+    async fn pump_turn_events_emits_agent_message_and_plan_deltas() {
+        let (server_tx, server_rx) = tokio::sync::broadcast::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let pump = tokio::spawn(pump_turn_events(
+            server_rx,
+            event_tx,
+            "thread_1".to_string(),
+            "turn_1".to_string(),
+        ));
+
+        let mut extra = Map::new();
+        extra.insert(
+            "threadId".to_string(),
+            Value::String("thread_1".to_string()),
+        );
+        extra.insert("turnId".to_string(), Value::String("turn_1".to_string()));
+
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::ItemAgentMessageDelta(
+                    crate::protocol::notifications::DeltaNotification {
+                        item_id: Some("msg_1".to_string()),
+                        delta: Some("hello".to_string()),
+                        text: None,
+                        summary_index: None,
+                        extra: extra.clone(),
+                    },
+                ),
+            ))
+            .expect("send agent message delta");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("agent message event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::ItemUpdated {
+                item: ThreadItem::AgentMessage(AgentMessageItem {
+                    id: "msg_1".to_string(),
+                    text: "hello".to_string(),
+                    phase: None,
+                }),
+            }
+        );
+
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::ItemPlanDelta(
+                    crate::protocol::notifications::DeltaNotification {
+                        item_id: Some("plan_1".to_string()),
+                        delta: None,
+                        text: Some("1. inspect".to_string()),
+                        summary_index: None,
+                        extra,
+                    },
+                ),
+            ))
+            .expect("send plan delta");
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("plan event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::ItemUpdated {
+                item: ThreadItem::Plan(PlanItem {
+                    id: "plan_1".to_string(),
+                    text: "1. inspect".to_string(),
+                }),
+            }
+        );
+
+        pump.abort();
+    }
+
+    #[tokio::test]
+    async fn pump_turn_events_emits_turn_failed_and_terminates() {
+        let (server_tx, server_rx) = tokio::sync::broadcast::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let pump = tokio::spawn(pump_turn_events(
+            server_rx,
+            event_tx,
+            "thread_1".to_string(),
+            "turn_1".to_string(),
+        ));
+
+        let mut turn_extra = Map::new();
+        turn_extra.insert(
+            "threadId".to_string(),
+            Value::String("thread_1".to_string()),
+        );
+        turn_extra.insert("turnId".to_string(), Value::String("turn_1".to_string()));
+
+        server_tx
+            .send(ServerEvent::Notification(
+                ServerNotification::TurnCompleted(
+                    crate::protocol::notifications::TurnCompletedNotification {
+                        turn: responses::Turn {
+                            id: "turn_1".to_string(),
+                            status: Some("failed".to_string()),
+                            error: Some(responses::TurnError {
+                                message: "boom".to_string(),
+                                ..Default::default()
+                            }),
+                            extra: turn_extra,
+                            ..Default::default()
+                        },
+                        extra: Map::new(),
+                    },
+                ),
+            ))
+            .expect("send failed turn completion");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("turn failed event")
+                .expect("event channel open")
+                .expect("thread event ok"),
+            ThreadEvent::TurnFailed {
+                error: ThreadError {
+                    message: "boom".to_string(),
+                },
+            }
+        );
+
+        // The pump terminates after the terminal event, closing the channel.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("channel close")
+                .is_none()
+        );
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .expect("pump task ends")
+            .expect("pump task join");
+    }
+
     #[test]
     fn final_response_prefers_final_answer_phase() {
         let mut final_answer = None;
@@ -3277,6 +3296,132 @@ collaboration_mode = "plan"
         );
     }
 
+    fn extra_affecting_thread_options() -> ThreadOptions {
+        ThreadOptions::builder()
+            .skip_git_repo_check(true)
+            .web_search_mode(WebSearchMode::Live)
+            .web_search_enabled(false)
+            .network_access_enabled(true)
+            .add_directory("/tmp/one")
+            .sandbox_policy(json!({"type": "dangerFullAccess"}))
+            .model_reasoning_effort(ModelReasoningEffort::Low)
+            .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .ephemeral(true)
+            .collaboration_mode(CollaborationMode::new(
+                CollaborationModeKind::Plan,
+                CollaborationModeSettings::new("gpt-5.2-codex"),
+            ))
+            .insert_config("profile", Value::String("test".to_string()))
+            .dynamic_tools(vec![DynamicToolSpec::new(
+                "demo_tool",
+                "Demo dynamic tool",
+                json!({"type": "object"}),
+            )])
+            .experimental_raw_events(true)
+            .persist_extended_history(true)
+            .build()
+    }
+
+    fn sorted_extra_keys(extra: &Map<String, Value>) -> Vec<&str> {
+        let mut keys: Vec<&str> = extra.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    #[test]
+    fn thread_start_params_extra_encodes_collaboration_mode_and_pins_key_set() {
+        let options = extra_affecting_thread_options();
+        let params = build_thread_start_params(&options);
+
+        assert_eq!(
+            params.extra.get("collaborationMode"),
+            Some(&json!({
+                "mode": "plan",
+                "settings": { "model": "gpt-5.2-codex" }
+            }))
+        );
+        // thread/start does NOT send sandboxPolicy/effort/summary/ephemeral in
+        // extra (they are top-level params) — pin the exact key set.
+        assert_eq!(
+            sorted_extra_keys(&params.extra),
+            vec![
+                "additionalDirectories",
+                "collaborationMode",
+                "config",
+                "dynamicTools",
+                "experimentalRawEvents",
+                "networkAccessEnabled",
+                "persistExtendedHistory",
+                "skipGitRepoCheck",
+                "webSearchEnabled",
+                "webSearchMode",
+            ]
+        );
+    }
+
+    #[test]
+    fn thread_resume_params_extra_pins_key_set() {
+        let options = extra_affecting_thread_options();
+        let params = build_thread_resume_params("thread_123", &options);
+
+        assert_eq!(
+            params.extra.get("collaborationMode"),
+            Some(&json!({
+                "mode": "plan",
+                "settings": { "model": "gpt-5.2-codex" }
+            }))
+        );
+        // thread/resume DOES send sandboxPolicy/effort/summary/ephemeral in
+        // extra, unlike thread/start — pin the exact key set.
+        assert_eq!(
+            sorted_extra_keys(&params.extra),
+            vec![
+                "additionalDirectories",
+                "collaborationMode",
+                "dynamicTools",
+                "effort",
+                "ephemeral",
+                "experimentalRawEvents",
+                "networkAccessEnabled",
+                "sandboxPolicy",
+                "skipGitRepoCheck",
+                "summary",
+                "webSearchEnabled",
+                "webSearchMode",
+            ]
+        );
+    }
+
+    #[test]
+    fn turn_start_params_extra_pins_key_set() {
+        let options = extra_affecting_thread_options();
+        let params = build_turn_start_params(
+            "thread_123",
+            Input::text("hello"),
+            &options,
+            &TurnOptions::default(),
+        );
+
+        assert_eq!(
+            params.extra.get("collaborationMode"),
+            Some(&json!({
+                "mode": "plan",
+                "settings": { "model": "gpt-5.2-codex" }
+            }))
+        );
+        assert_eq!(
+            sorted_extra_keys(&params.extra),
+            vec![
+                "additionalDirectories",
+                "collaborationMode",
+                "networkAccessEnabled",
+                "skipGitRepoCheck",
+                "webSearchEnabled",
+                "webSearchMode",
+            ]
+        );
+    }
+
     #[test]
     fn thread_options_builder_skip_git_repo_check_matches_cli_flag_semantics() {
         let enabled = ThreadOptions::builder().skip_git_repo_check(true).build();
@@ -3341,6 +3486,71 @@ collaboration_mode = "plan"
         assert_eq!(
             typed.output_schema,
             Some(StructuredReply::openai_output_schema())
+        );
+    }
+
+    #[test]
+    fn resolved_options_merge_prefers_turn_values_and_falls_back_to_thread() {
+        let thread_options = ThreadOptions::builder()
+            .model("thread-model")
+            .model_provider("thread-provider")
+            .working_directory("/tmp/thread")
+            .model_reasoning_effort(ModelReasoningEffort::Low)
+            .personality(Personality::Friendly)
+            .approval_policy(ApprovalMode::OnRequest)
+            .sandbox_policy(json!({"thread": true}))
+            .skip_git_repo_check(false)
+            .web_search_mode(WebSearchMode::Cached)
+            .web_search_enabled(false)
+            .network_access_enabled(false)
+            .add_directory("/tmp/thread-dir")
+            .collaboration_mode(CollaborationMode::new(
+                CollaborationModeKind::Plan,
+                CollaborationModeSettings::new("thread-collab"),
+            ))
+            .model_reasoning_summary(ModelReasoningSummary::Auto)
+            .build();
+
+        // Fields set on the turn win over thread-level defaults.
+        let turn_options = TurnOptions::builder()
+            .model("turn-model")
+            .model_reasoning_effort(ModelReasoningEffort::High)
+            .sandbox_policy(json!({"turn": true}))
+            .web_search_mode(WebSearchMode::Live)
+            .skip_git_repo_check(true)
+            .add_directory("/tmp/turn-dir")
+            .build();
+
+        let merged = ResolvedOptions::merge(&thread_options, &turn_options);
+        assert_eq!(merged.model.as_deref(), Some("turn-model"));
+        assert_eq!(
+            merged.model_reasoning_effort,
+            Some(ModelReasoningEffort::High)
+        );
+        assert_eq!(merged.sandbox_policy, Some(json!({"turn": true})));
+        assert_eq!(merged.web_search_mode, Some(WebSearchMode::Live));
+        assert_eq!(merged.skip_git_repo_check, Some(true));
+        assert_eq!(
+            merged.additional_directories,
+            Some(vec!["/tmp/turn-dir".to_string()])
+        );
+        // Fields not set on the turn fall back to the thread-level values.
+        assert_eq!(merged.model_provider.as_deref(), Some("thread-provider"));
+        assert_eq!(merged.working_directory.as_deref(), Some("/tmp/thread"));
+        assert_eq!(merged.personality, Some(Personality::Friendly));
+        assert_eq!(merged.approval_policy, Some(ApprovalMode::OnRequest));
+        assert_eq!(merged.web_search_enabled, Some(false));
+        assert_eq!(merged.network_access_enabled, Some(false));
+        assert_eq!(
+            merged.model_reasoning_summary,
+            Some(ModelReasoningSummary::Auto)
+        );
+        assert_eq!(merged.collaboration_mode, thread_options.collaboration_mode);
+
+        // With no turn overrides at all, the merge equals the thread defaults.
+        assert_eq!(
+            ResolvedOptions::merge(&thread_options, &TurnOptions::default()),
+            ResolvedOptions::from_thread(&thread_options)
         );
     }
 

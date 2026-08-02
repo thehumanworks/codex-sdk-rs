@@ -6,9 +6,9 @@ use std::process::Command;
 use std::process::ExitCode;
 
 use codex_app_server_sdk::api::{
-    ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary, Personality,
-    SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions, ThreadRunError, TurnOptions,
-    UserMessageContentItem, WebSearchMode,
+    ApprovalMode, Codex, DynamicToolSpec, ModelReasoningEffort, ModelReasoningSummary,
+    ModelVerbosity, Personality, SandboxMode, StreamedTurn, ThreadEvent, ThreadItem, ThreadOptions,
+    ThreadRunError, TurnOptions, UserMessageContentItem, WebSearchMode,
 };
 use codex_app_server_sdk::{ClientError, StdioConfig, requests, responses};
 use codex_app_server_sdk::{ClientOptions, CodexClient, WsConfig};
@@ -177,23 +177,6 @@ struct AgentConfigLayer {
 enum ParsedCommand {
     Help,
     Run(CliArgs),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModelVerbosity {
-    Low,
-    Medium,
-    High,
-}
-
-impl ModelVerbosity {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1369,7 +1352,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 })?;
                 set_option_once(
                     &mut reasoning_effort,
-                    parse_reasoning_effort(&raw)?,
+                    parse_enum_flag(&raw, "--reasoning-effort", ModelReasoningEffort::VARIANTS)?,
                     "--reasoning-effort",
                 )?;
                 continue;
@@ -1377,7 +1360,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if let Some(raw) = arg.strip_prefix("--reasoning-effort=") {
                 set_option_once(
                     &mut reasoning_effort,
-                    parse_reasoning_effort(raw)?,
+                    parse_enum_flag(raw, "--reasoning-effort", ModelReasoningEffort::VARIANTS)?,
                     "--reasoning-effort",
                 )?;
                 continue;
@@ -1388,7 +1371,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 })?;
                 set_option_once(
                     &mut reasoning_summary,
-                    parse_reasoning_summary(&raw)?,
+                    parse_enum_flag(&raw, "--reasoning-summary", ModelReasoningSummary::VARIANTS)?,
                     "--reasoning-summary",
                 )?;
                 continue;
@@ -1396,7 +1379,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if let Some(raw) = arg.strip_prefix("--reasoning-summary=") {
                 set_option_once(
                     &mut reasoning_summary,
-                    parse_reasoning_summary(raw)?,
+                    parse_enum_flag(raw, "--reasoning-summary", ModelReasoningSummary::VARIANTS)?,
                     "--reasoning-summary",
                 )?;
                 continue;
@@ -1407,7 +1390,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 })?;
                 set_option_once(
                     &mut model_verbosity,
-                    parse_model_verbosity(&raw)?,
+                    parse_enum_flag(&raw, "--model-verbosity", ModelVerbosity::VARIANTS)?,
                     "--model-verbosity",
                 )?;
                 continue;
@@ -1415,7 +1398,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if let Some(raw) = arg.strip_prefix("--model-verbosity=") {
                 set_option_once(
                     &mut model_verbosity,
-                    parse_model_verbosity(raw)?,
+                    parse_enum_flag(raw, "--model-verbosity", ModelVerbosity::VARIANTS)?,
                     "--model-verbosity",
                 )?;
                 continue;
@@ -1437,7 +1420,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 })?;
                 set_option_once(
                     &mut approval_policy,
-                    parse_approval_mode(&raw)?,
+                    parse_enum_flag(&raw, "--approval-policy", ApprovalMode::VARIANTS)?,
                     "--approval-policy",
                 )?;
                 continue;
@@ -1445,7 +1428,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if let Some(raw) = arg.strip_prefix("--approval-policy=") {
                 set_option_once(
                     &mut approval_policy,
-                    parse_approval_mode(raw)?,
+                    parse_enum_flag(raw, "--approval-policy", ApprovalMode::VARIANTS)?,
                     "--approval-policy",
                 )?;
                 continue;
@@ -1454,11 +1437,19 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 let raw = iter
                     .next()
                     .ok_or_else(|| SparkError::Usage("missing value for --sandbox".to_string()))?;
-                set_option_once(&mut sandbox_mode, parse_sandbox_mode(&raw)?, "--sandbox")?;
+                set_option_once(
+                    &mut sandbox_mode,
+                    parse_enum_flag(&raw, "--sandbox", SandboxMode::VARIANTS)?,
+                    "--sandbox",
+                )?;
                 continue;
             }
             if let Some(raw) = arg.strip_prefix("--sandbox=") {
-                set_option_once(&mut sandbox_mode, parse_sandbox_mode(raw)?, "--sandbox")?;
+                set_option_once(
+                    &mut sandbox_mode,
+                    parse_enum_flag(raw, "--sandbox", SandboxMode::VARIANTS)?,
+                    "--sandbox",
+                )?;
                 continue;
             }
             if arg == "--sandbox-policy-json" {
@@ -1505,7 +1496,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 })?;
                 set_option_once(
                     &mut web_search_mode,
-                    parse_web_search_mode(&raw)?,
+                    parse_enum_flag(&raw, "--web-search-mode", WebSearchMode::VARIANTS)?,
                     "--web-search-mode",
                 )?;
                 continue;
@@ -1513,7 +1504,7 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
             if let Some(raw) = arg.strip_prefix("--web-search-mode=") {
                 set_option_once(
                     &mut web_search_mode,
-                    parse_web_search_mode(raw)?,
+                    parse_enum_flag(raw, "--web-search-mode", WebSearchMode::VARIANTS)?,
                     "--web-search-mode",
                 )?;
                 continue;
@@ -1533,11 +1524,19 @@ fn parse_cli_args(args: impl IntoIterator<Item = String>) -> Result<ParsedComman
                 let raw = iter.next().ok_or_else(|| {
                     SparkError::Usage("missing value for --personality".to_string())
                 })?;
-                set_option_once(&mut personality, parse_personality(&raw)?, "--personality")?;
+                set_option_once(
+                    &mut personality,
+                    parse_enum_flag(&raw, "--personality", Personality::VARIANTS)?,
+                    "--personality",
+                )?;
                 continue;
             }
             if let Some(raw) = arg.strip_prefix("--personality=") {
-                set_option_once(&mut personality, parse_personality(raw)?, "--personality")?;
+                set_option_once(
+                    &mut personality,
+                    parse_enum_flag(raw, "--personality", Personality::VARIANTS)?,
+                    "--personality",
+                )?;
                 continue;
             }
             if arg == "--base-instructions" {
@@ -1927,94 +1926,19 @@ fn set_string_option_once(
     set_option_once(slot, value.to_string(), flag)
 }
 
-fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, SparkError> {
-    match raw.trim() {
-        "none" => Ok(ModelReasoningEffort::None),
-        "minimal" => Ok(ModelReasoningEffort::Minimal),
-        "low" => Ok(ModelReasoningEffort::Low),
-        "medium" => Ok(ModelReasoningEffort::Medium),
-        "high" => Ok(ModelReasoningEffort::High),
-        "xhigh" => Ok(ModelReasoningEffort::XHigh),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --reasoning-effort '{raw}'; expected one of: none, minimal, low, medium, high, xhigh"
-        ))),
-    }
-}
-
-fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, SparkError> {
-    match raw.trim() {
-        "none" => Ok(ModelReasoningSummary::None),
-        "auto" => Ok(ModelReasoningSummary::Auto),
-        "concise" => Ok(ModelReasoningSummary::Concise),
-        "detailed" => Ok(ModelReasoningSummary::Detailed),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --reasoning-summary '{raw}'; expected one of: none, auto, concise, detailed"
-        ))),
-    }
-}
-
-fn parse_model_verbosity(raw: &str) -> Result<ModelVerbosity, SparkError> {
-    match raw.trim() {
-        "low" => Ok(ModelVerbosity::Low),
-        "medium" => Ok(ModelVerbosity::Medium),
-        "high" => Ok(ModelVerbosity::High),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --model-verbosity '{raw}'; expected one of: low, medium, high"
-        ))),
-    }
-}
-
-fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, SparkError> {
-    match raw.trim() {
-        "never" => Ok(ApprovalMode::Never),
-        "on-request" => Ok(ApprovalMode::OnRequest),
-        "on-failure" => Ok(ApprovalMode::OnFailure),
-        "untrusted" => Ok(ApprovalMode::Untrusted),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --approval-policy '{raw}'; expected one of: never, on-request, on-failure, untrusted"
-        ))),
-    }
-}
-
-fn parse_sandbox_mode(raw: &str) -> Result<SandboxMode, SparkError> {
-    match raw.trim() {
-        "read-only" => Ok(SandboxMode::ReadOnly),
-        "workspace-write" => Ok(SandboxMode::WorkspaceWrite),
-        "danger-full-access" => Ok(SandboxMode::DangerFullAccess),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --sandbox '{raw}'; expected one of: read-only, workspace-write, danger-full-access"
-        ))),
-    }
-}
-
-fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, SparkError> {
-    match raw.trim() {
-        "disabled" => Ok(WebSearchMode::Disabled),
-        "cached" => Ok(WebSearchMode::Cached),
-        "live" => Ok(WebSearchMode::Live),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --web-search-mode '{raw}'; expected one of: disabled, cached, live"
-        ))),
-    }
-}
-
-fn web_search_mode_as_str(mode: WebSearchMode) -> &'static str {
-    match mode {
-        WebSearchMode::Disabled => "disabled",
-        WebSearchMode::Cached => "cached",
-        WebSearchMode::Live => "live",
-    }
-}
-
-fn parse_personality(raw: &str) -> Result<Personality, SparkError> {
-    match raw.trim() {
-        "none" => Ok(Personality::None),
-        "friendly" => Ok(Personality::Friendly),
-        "pragmatic" => Ok(Personality::Pragmatic),
-        _ => Err(SparkError::Usage(format!(
-            "invalid --personality '{raw}'; expected one of: none, friendly, pragmatic"
-        ))),
-    }
+/// Parses a wire-enum CLI flag value, mapping unknown values to a usage error
+/// that lists the accepted spellings.
+fn parse_enum_flag<T: std::str::FromStr>(
+    raw: &str,
+    flag: &str,
+    variants: &[&str],
+) -> Result<T, SparkError> {
+    raw.trim().parse().map_err(|_| {
+        SparkError::Usage(format!(
+            "invalid {flag} '{raw}'; expected one of: {}",
+            variants.join(", ")
+        ))
+    })
 }
 
 fn parse_json_value(raw: &str, flag: &str) -> Result<Value, SparkError> {
@@ -2114,7 +2038,7 @@ fn build_thread_config(
     if let Some(mode) = web_search_mode {
         config.insert(
             "web_search".to_string(),
-            Value::String(web_search_mode_as_str(mode).to_string()),
+            Value::String(mode.as_str().to_string()),
         );
     }
     if let Some(profile) = config_profile {

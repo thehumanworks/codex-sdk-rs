@@ -9,9 +9,9 @@ use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use codex_app_server_sdk::{
     AgentMessageItem, ApprovalMode, CodexClient, CommandExecutionStatus, ModelReasoningEffort,
-    ModelReasoningSummary, PatchApplyStatus, PatchChangeKind, Personality, ReasoningItem,
-    SandboxMode, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions, Usage, WebSearchMode,
-    WsConfig,
+    ModelReasoningSummary, ModelVerbosity, PatchApplyStatus, PatchChangeKind, Personality,
+    ReasoningItem, SandboxMode, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions, Usage,
+    WebSearchMode, WsConfig,
 };
 use owo_colors::{OwoColorize, Stream::Stdout};
 use serde::{Deserialize, Serialize};
@@ -60,24 +60,6 @@ struct Cli {
 enum AgentScope {
     Project,
     User,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum ModelVerbosity {
-    Low,
-    Medium,
-    High,
-}
-
-impl ModelVerbosity {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -319,7 +301,7 @@ fn config_map_from_agent(config: &AgentConfig) -> anyhow::Result<Map<String, Val
     if let Some(web_search) = config.web_search {
         map.insert(
             "web_search".to_string(),
-            Value::String(web_search_mode_as_str(web_search).to_string()),
+            Value::String(web_search.as_str().to_string()),
         );
     }
     if let Some(AgentApprovalPolicy::Raw(value)) = &config.approval_policy {
@@ -348,14 +330,6 @@ fn insert_config_value(map: &mut Map<String, Value>, key: &str, value: Value) {
 
 fn toml_value_to_json(value: toml::Value) -> anyhow::Result<Value> {
     serde_json::to_value(value).context("failed to convert TOML value to JSON")
-}
-
-fn web_search_mode_as_str(mode: WebSearchMode) -> &'static str {
-    match mode {
-        WebSearchMode::Disabled => "disabled",
-        WebSearchMode::Cached => "cached",
-        WebSearchMode::Live => "live",
-    }
 }
 
 fn resolve_agent_config_path(
