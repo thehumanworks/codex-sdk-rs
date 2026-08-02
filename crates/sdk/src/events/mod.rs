@@ -12,203 +12,259 @@ pub enum ServerEvent {
     TransportClosed,
 }
 
-#[derive(Debug, Clone)]
-pub enum ServerNotification {
-    Error(n::ErrorNotification),
-    ThreadStarted(n::ThreadStartedNotification),
-    ThreadArchived(n::ThreadLifecycleNotification),
-    ThreadUnarchived(n::ThreadLifecycleNotification),
-    ThreadClosed(n::ThreadLifecycleNotification),
-    ThreadNameUpdated(n::ThreadNameUpdatedNotification),
-    ThreadStatusChanged(n::ThreadStatusChangedNotification),
-    ThreadTokenUsageUpdated(n::ThreadTokenUsageUpdatedNotification),
-    TurnStarted(n::TurnStartedNotification),
-    TurnCompleted(n::TurnCompletedNotification),
-    TurnDiffUpdated(n::TurnDiffUpdatedNotification),
-    TurnPlanUpdated(n::TurnPlanUpdatedNotification),
-    ItemStarted(n::ItemLifecycleNotification),
-    ItemCompleted(n::ItemLifecycleNotification),
-    RawResponseItemCompleted(n::RawResponseItemCompletedNotification),
-    ItemAgentMessageDelta(n::DeltaNotification),
-    ItemPlanDelta(n::DeltaNotification),
-    ItemCommandExecutionOutputDelta(n::DeltaNotification),
-    ItemCommandExecutionTerminalInteraction(n::DeltaNotification),
-    ItemFileChangeOutputDelta(n::DeltaNotification),
-    ItemMcpToolCallProgress(n::DeltaNotification),
-    ItemReasoningSummaryTextDelta(n::DeltaNotification),
-    ItemReasoningSummaryPartAdded(n::DeltaNotification),
-    ItemReasoningTextDelta(n::DeltaNotification),
-    McpServerOauthLoginCompleted(n::McpServerOauthLoginCompletedNotification),
-    AccountUpdated(n::AccountUpdatedNotification),
-    AccountRateLimitsUpdated(n::AccountRateLimitsUpdatedNotification),
-    AppListUpdated(n::AppListUpdatedNotification),
-    ContextCompacted(n::DeltaNotification),
-    DeprecationNotice(n::DeprecationNoticeNotification),
-    ConfigWarning(n::ConfigWarningNotification),
-    WindowsWorldWritableWarning(n::WindowsWorldWritableWarningNotification),
-    WindowsSandboxSetupCompleted(n::WindowsSandboxSetupCompletedNotification),
-    AccountLoginCompleted(n::AccountLoginCompletedNotification),
-    AuthStatusChange(n::AuthStatusChangeNotification),
-    LoginChatGptComplete(n::LoginChatGptCompleteNotification),
-    SessionConfigured(n::SessionConfiguredNotification),
-    FuzzyFileSearchSessionUpdated(n::FuzzyFileSearchSessionUpdatedNotification),
-    FuzzyFileSearchSessionCompleted(n::FuzzyFileSearchSessionCompletedNotification),
-    ServerRequestResolved(n::ServerRequestResolvedNotification),
-    Unknown { method: String, params: Value },
+/// Declarative table of server notifications: one row per
+/// `(variant, wire method, payload type)`. Emits the `ServerNotification`
+/// enum, `parse_notification`, the `method_name` accessor, and the list of
+/// method names used by the completeness test, so a row cannot half-land.
+macro_rules! notification_table {
+    ( $( $variant:ident => ($method:literal, $payload:ty) ),+ $(,)? ) => {
+        #[derive(Debug, Clone)]
+        pub enum ServerNotification {
+            $( $variant($payload), )+
+            Unknown { method: String, params: Value },
+        }
+
+        pub fn parse_notification(
+            method: String,
+            params: Value,
+        ) -> Result<ServerNotification, ClientError> {
+            let event = match method.as_str() {
+                $( $method => ServerNotification::$variant(decode(params)?), )+
+                _ => ServerNotification::Unknown { method, params },
+            };
+            Ok(event)
+        }
+
+        impl ServerNotification {
+            /// The wire method string for this notification, or `None` for
+            /// `Unknown`.
+            pub fn method_name(&self) -> Option<&'static str> {
+                match self {
+                    $( Self::$variant(_) => Some($method), )+
+                    Self::Unknown { .. } => None,
+                }
+            }
+
+            #[cfg(test)]
+            pub(crate) const METHOD_NAMES: &'static [&'static str] = &[ $( $method ),+ ];
+        }
+    };
 }
 
-#[derive(Debug, Clone)]
-pub enum ServerRequestEvent {
-    ChatgptAuthTokensRefresh {
-        id: RequestId,
-        params: sr::ChatgptAuthTokensRefreshParams,
-    },
-    ApplyPatchApproval {
-        id: RequestId,
-        params: sr::ApplyPatchApprovalParams,
-    },
-    ExecCommandApproval {
-        id: RequestId,
-        params: sr::ExecCommandApprovalParams,
-    },
-    CommandExecutionRequestApproval {
-        id: RequestId,
-        params: sr::CommandExecutionRequestApprovalParams,
-    },
-    FileChangeRequestApproval {
-        id: RequestId,
-        params: sr::FileChangeRequestApprovalParams,
-    },
-    ToolRequestUserInput {
-        id: RequestId,
-        params: sr::ToolRequestUserInputParams,
-    },
-    DynamicToolCall {
-        id: RequestId,
-        params: sr::DynamicToolCallParams,
-    },
-    Unknown {
-        id: RequestId,
-        method: String,
-        params: Value,
-    },
+notification_table! {
+    Error => ("error", n::ErrorNotification),
+    ThreadStarted => ("thread/started", n::ThreadStartedNotification),
+    ThreadArchived => ("thread/archived", n::ThreadLifecycleNotification),
+    ThreadUnarchived => ("thread/unarchived", n::ThreadLifecycleNotification),
+    ThreadClosed => ("thread/closed", n::ThreadLifecycleNotification),
+    ThreadNameUpdated => ("thread/name/updated", n::ThreadNameUpdatedNotification),
+    ThreadStatusChanged => ("thread/status/changed", n::ThreadStatusChangedNotification),
+    ThreadTokenUsageUpdated => ("thread/tokenUsage/updated", n::ThreadTokenUsageUpdatedNotification),
+    TurnStarted => ("turn/started", n::TurnStartedNotification),
+    TurnCompleted => ("turn/completed", n::TurnCompletedNotification),
+    TurnDiffUpdated => ("turn/diff/updated", n::TurnDiffUpdatedNotification),
+    TurnPlanUpdated => ("turn/plan/updated", n::TurnPlanUpdatedNotification),
+    ItemStarted => ("item/started", n::ItemLifecycleNotification),
+    ItemCompleted => ("item/completed", n::ItemLifecycleNotification),
+    RawResponseItemCompleted => ("rawResponseItem/completed", n::RawResponseItemCompletedNotification),
+    ItemAgentMessageDelta => ("item/agentMessage/delta", n::DeltaNotification),
+    ItemPlanDelta => ("item/plan/delta", n::DeltaNotification),
+    ItemCommandExecutionOutputDelta => ("item/commandExecution/outputDelta", n::DeltaNotification),
+    ItemCommandExecutionTerminalInteraction => ("item/commandExecution/terminalInteraction", n::DeltaNotification),
+    ItemFileChangeOutputDelta => ("item/fileChange/outputDelta", n::DeltaNotification),
+    ItemMcpToolCallProgress => ("item/mcpToolCall/progress", n::DeltaNotification),
+    ItemReasoningSummaryTextDelta => ("item/reasoning/summaryTextDelta", n::DeltaNotification),
+    ItemReasoningSummaryPartAdded => ("item/reasoning/summaryPartAdded", n::DeltaNotification),
+    ItemReasoningTextDelta => ("item/reasoning/textDelta", n::DeltaNotification),
+    McpServerOauthLoginCompleted => ("mcpServer/oauthLogin/completed", n::McpServerOauthLoginCompletedNotification),
+    AccountUpdated => ("account/updated", n::AccountUpdatedNotification),
+    AccountRateLimitsUpdated => ("account/rateLimits/updated", n::AccountRateLimitsUpdatedNotification),
+    AppListUpdated => ("app/list/updated", n::AppListUpdatedNotification),
+    ContextCompacted => ("thread/compacted", n::DeltaNotification),
+    DeprecationNotice => ("deprecationNotice", n::DeprecationNoticeNotification),
+    ConfigWarning => ("configWarning", n::ConfigWarningNotification),
+    WindowsWorldWritableWarning => ("windows/worldWritableWarning", n::WindowsWorldWritableWarningNotification),
+    WindowsSandboxSetupCompleted => ("windowsSandbox/setupCompleted", n::WindowsSandboxSetupCompletedNotification),
+    AccountLoginCompleted => ("account/login/completed", n::AccountLoginCompletedNotification),
+    AuthStatusChange => ("authStatusChange", n::AuthStatusChangeNotification),
+    LoginChatGptComplete => ("loginChatGptComplete", n::LoginChatGptCompleteNotification),
+    SessionConfigured => ("sessionConfigured", n::SessionConfiguredNotification),
+    FuzzyFileSearchSessionUpdated => ("fuzzyFileSearch/sessionUpdated", n::FuzzyFileSearchSessionUpdatedNotification),
+    FuzzyFileSearchSessionCompleted => ("fuzzyFileSearch/sessionCompleted", n::FuzzyFileSearchSessionCompletedNotification),
+    ServerRequestResolved => ("serverRequest/resolved", n::ServerRequestResolvedNotification),
 }
+
+/// The single source of truth for the seven server-initiated requests.
+///
+/// Each row carries every name the request needs across the SDK:
+/// `Variant { method, params type, response type, handler field, set/clear
+/// registration methods, respond wrapper, error-context string }`. The table
+/// is expanded here (enum + parser) and in `client::server_requests` (handler
+/// storage, registration API, auto-dispatch), so a row cannot half-land.
+macro_rules! server_request_table {
+    ($callback:ident) => {
+        $callback! {
+            ChatgptAuthTokensRefresh {
+                method: "account/chatgptAuthTokens/refresh",
+                params: ChatgptAuthTokensRefreshParams,
+                response: ChatgptAuthTokensRefreshResponse,
+                handler: chatgpt_auth_tokens_refresh,
+                set: set_chatgpt_auth_tokens_refresh_handler,
+                clear: clear_chatgpt_auth_tokens_refresh_handler,
+                respond: respond_chatgpt_auth_tokens_refresh,
+                context: "chatgptAuthTokens refresh",
+            },
+            ApplyPatchApproval {
+                method: "applyPatchApproval",
+                params: ApplyPatchApprovalParams,
+                response: ApplyPatchApprovalResponse,
+                handler: apply_patch_approval,
+                set: set_apply_patch_approval_handler,
+                clear: clear_apply_patch_approval_handler,
+                respond: respond_apply_patch_approval,
+                context: "applyPatchApproval",
+            },
+            ExecCommandApproval {
+                method: "execCommandApproval",
+                params: ExecCommandApprovalParams,
+                response: ExecCommandApprovalResponse,
+                handler: exec_command_approval,
+                set: set_exec_command_approval_handler,
+                clear: clear_exec_command_approval_handler,
+                respond: respond_exec_command_approval,
+                context: "execCommandApproval",
+            },
+            CommandExecutionRequestApproval {
+                method: "item/commandExecution/requestApproval",
+                params: CommandExecutionRequestApprovalParams,
+                response: CommandExecutionRequestApprovalResponse,
+                handler: command_execution_request_approval,
+                set: set_command_execution_request_approval_handler,
+                clear: clear_command_execution_request_approval_handler,
+                respond: respond_command_execution_request_approval,
+                context: "item/commandExecution/requestApproval",
+            },
+            FileChangeRequestApproval {
+                method: "item/fileChange/requestApproval",
+                params: FileChangeRequestApprovalParams,
+                response: FileChangeRequestApprovalResponse,
+                handler: file_change_request_approval,
+                set: set_file_change_request_approval_handler,
+                clear: clear_file_change_request_approval_handler,
+                respond: respond_file_change_request_approval,
+                context: "item/fileChange/requestApproval",
+            },
+            ToolRequestUserInput {
+                method: "item/tool/requestUserInput",
+                params: ToolRequestUserInputParams,
+                response: ToolRequestUserInputResponse,
+                handler: tool_request_user_input,
+                set: set_tool_request_user_input_handler,
+                clear: clear_tool_request_user_input_handler,
+                respond: respond_tool_request_user_input,
+                context: "item/tool/requestUserInput",
+            },
+            DynamicToolCall {
+                method: "item/tool/call",
+                params: DynamicToolCallParams,
+                response: DynamicToolCallResponse,
+                handler: dynamic_tool_call,
+                set: set_dynamic_tool_call_handler,
+                clear: clear_dynamic_tool_call_handler,
+                respond: respond_dynamic_tool_call,
+                context: "item/tool/call",
+            },
+        }
+    };
+}
+
+pub(crate) use server_request_table;
+
+/// Expands the server-request table into the `ServerRequestEvent` enum and
+/// `parse_server_request`.
+macro_rules! define_server_request_events {
+    ( $( $variant:ident {
+        method: $method:literal,
+        params: $params:ident,
+        response: $response:ident,
+        handler: $handler:ident,
+        set: $set:ident,
+        clear: $clear:ident,
+        respond: $respond:ident,
+        context: $context:literal,
+    } ),+ $(,)? ) => {
+        #[derive(Debug, Clone)]
+        pub enum ServerRequestEvent {
+            $( $variant {
+                id: RequestId,
+                params: sr::$params,
+            }, )+
+            Unknown {
+                id: RequestId,
+                method: String,
+                params: Value,
+            },
+        }
+
+        pub fn parse_server_request(
+            id: RequestId,
+            method: String,
+            params: Value,
+        ) -> Result<ServerRequestEvent, ClientError> {
+            let req = match method.as_str() {
+                $( $method => ServerRequestEvent::$variant {
+                    id,
+                    params: decode(params)?,
+                }, )+
+                _ => ServerRequestEvent::Unknown { id, method, params },
+            };
+            Ok(req)
+        }
+    };
+}
+
+server_request_table!(define_server_request_events);
 
 fn decode<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ClientError> {
     serde_json::from_value(params).map_err(ClientError::Serialization)
 }
 
-pub fn parse_notification(
-    method: String,
-    params: Value,
-) -> Result<ServerNotification, ClientError> {
-    let event = match method.as_str() {
-        "error" => ServerNotification::Error(decode(params)?),
-        "thread/started" => ServerNotification::ThreadStarted(decode(params)?),
-        "thread/archived" => ServerNotification::ThreadArchived(decode(params)?),
-        "thread/unarchived" => ServerNotification::ThreadUnarchived(decode(params)?),
-        "thread/closed" => ServerNotification::ThreadClosed(decode(params)?),
-        "thread/name/updated" => ServerNotification::ThreadNameUpdated(decode(params)?),
-        "thread/status/changed" => ServerNotification::ThreadStatusChanged(decode(params)?),
-        "thread/tokenUsage/updated" => ServerNotification::ThreadTokenUsageUpdated(decode(params)?),
-        "turn/started" => ServerNotification::TurnStarted(decode(params)?),
-        "turn/completed" => ServerNotification::TurnCompleted(decode(params)?),
-        "turn/diff/updated" => ServerNotification::TurnDiffUpdated(decode(params)?),
-        "turn/plan/updated" => ServerNotification::TurnPlanUpdated(decode(params)?),
-        "item/started" => ServerNotification::ItemStarted(decode(params)?),
-        "item/completed" => ServerNotification::ItemCompleted(decode(params)?),
-        "rawResponseItem/completed" => {
-            ServerNotification::RawResponseItemCompleted(decode(params)?)
-        }
-        "item/agentMessage/delta" => ServerNotification::ItemAgentMessageDelta(decode(params)?),
-        "item/plan/delta" => ServerNotification::ItemPlanDelta(decode(params)?),
-        "item/commandExecution/outputDelta" => {
-            ServerNotification::ItemCommandExecutionOutputDelta(decode(params)?)
-        }
-        "item/commandExecution/terminalInteraction" => {
-            ServerNotification::ItemCommandExecutionTerminalInteraction(decode(params)?)
-        }
-        "item/fileChange/outputDelta" => {
-            ServerNotification::ItemFileChangeOutputDelta(decode(params)?)
-        }
-        "item/mcpToolCall/progress" => ServerNotification::ItemMcpToolCallProgress(decode(params)?),
-        "item/reasoning/summaryTextDelta" => {
-            ServerNotification::ItemReasoningSummaryTextDelta(decode(params)?)
-        }
-        "item/reasoning/summaryPartAdded" => {
-            ServerNotification::ItemReasoningSummaryPartAdded(decode(params)?)
-        }
-        "item/reasoning/textDelta" => ServerNotification::ItemReasoningTextDelta(decode(params)?),
-        "mcpServer/oauthLogin/completed" => {
-            ServerNotification::McpServerOauthLoginCompleted(decode(params)?)
-        }
-        "account/updated" => ServerNotification::AccountUpdated(decode(params)?),
-        "account/rateLimits/updated" => {
-            ServerNotification::AccountRateLimitsUpdated(decode(params)?)
-        }
-        "app/list/updated" => ServerNotification::AppListUpdated(decode(params)?),
-        "thread/compacted" => ServerNotification::ContextCompacted(decode(params)?),
-        "deprecationNotice" => ServerNotification::DeprecationNotice(decode(params)?),
-        "configWarning" => ServerNotification::ConfigWarning(decode(params)?),
-        "windows/worldWritableWarning" => {
-            ServerNotification::WindowsWorldWritableWarning(decode(params)?)
-        }
-        "windowsSandbox/setupCompleted" => {
-            ServerNotification::WindowsSandboxSetupCompleted(decode(params)?)
-        }
-        "account/login/completed" => ServerNotification::AccountLoginCompleted(decode(params)?),
-        "authStatusChange" => ServerNotification::AuthStatusChange(decode(params)?),
-        "loginChatGptComplete" => ServerNotification::LoginChatGptComplete(decode(params)?),
-        "sessionConfigured" => ServerNotification::SessionConfigured(decode(params)?),
-        "fuzzyFileSearch/sessionUpdated" => {
-            ServerNotification::FuzzyFileSearchSessionUpdated(decode(params)?)
-        }
-        "fuzzyFileSearch/sessionCompleted" => {
-            ServerNotification::FuzzyFileSearchSessionCompleted(decode(params)?)
-        }
-        "serverRequest/resolved" => ServerNotification::ServerRequestResolved(decode(params)?),
-        _ => ServerNotification::Unknown { method, params },
-    };
-    Ok(event)
-}
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
 
-pub fn parse_server_request(
-    id: RequestId,
-    method: String,
-    params: Value,
-) -> Result<ServerRequestEvent, ClientError> {
-    let req = match method.as_str() {
-        "account/chatgptAuthTokens/refresh" => ServerRequestEvent::ChatgptAuthTokensRefresh {
-            id,
-            params: decode(params)?,
-        },
-        "applyPatchApproval" => ServerRequestEvent::ApplyPatchApproval {
-            id,
-            params: decode(params)?,
-        },
-        "execCommandApproval" => ServerRequestEvent::ExecCommandApproval {
-            id,
-            params: decode(params)?,
-        },
-        "item/commandExecution/requestApproval" => {
-            ServerRequestEvent::CommandExecutionRequestApproval {
-                id,
-                params: decode(params)?,
-            }
+    use super::*;
+
+    #[test]
+    fn every_notification_row_parses_and_round_trips_its_method_name() {
+        // A superset params object satisfying the required fields of every
+        // notification payload type; unrecognized keys land in each payload's
+        // flattened `extra` map.
+        let params = json!({
+            "error": { "message": "m" },
+            "thread": { "id": "thr_1" },
+            "threadId": "thr_1",
+            "name": "n",
+            "turn": { "id": "turn_1" },
+            "turnId": "turn_1",
+            "requestId": 1
+        });
+
+        for method in ServerNotification::METHOD_NAMES {
+            let parsed = parse_notification(method.to_string(), params.clone())
+                .unwrap_or_else(|err| panic!("failed to parse `{method}`: {err}"));
+            assert_eq!(
+                parsed.method_name(),
+                Some(*method),
+                "method name did not round-trip for `{method}`"
+            );
         }
-        "item/fileChange/requestApproval" => ServerRequestEvent::FileChangeRequestApproval {
-            id,
-            params: decode(params)?,
-        },
-        "item/tool/requestUserInput" => ServerRequestEvent::ToolRequestUserInput {
-            id,
-            params: decode(params)?,
-        },
-        "item/tool/call" => ServerRequestEvent::DynamicToolCall {
-            id,
-            params: decode(params)?,
-        },
-        _ => ServerRequestEvent::Unknown { id, method, params },
-    };
-    Ok(req)
+    }
+
+    #[test]
+    fn unknown_notification_has_no_method_name() {
+        let parsed = parse_notification("no/such/method".to_string(), json!({})).expect("parse");
+        assert!(matches!(parsed, ServerNotification::Unknown { .. }));
+        assert_eq!(parsed.method_name(), None);
+    }
 }

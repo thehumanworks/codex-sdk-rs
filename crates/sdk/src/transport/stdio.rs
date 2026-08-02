@@ -1,12 +1,10 @@
 use std::collections::HashMap;
 use std::process::Stdio;
 
-use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
 
-use super::TransportHandle;
+use super::{RawFrame, TransportHandle, read_json_frames, transport_channels, write_json_frames};
 use crate::error::ClientError;
 
 pub async fn spawn_stdio_transport(
@@ -35,69 +33,30 @@ pub async fn spawn_stdio_transport(
         .take()
         .ok_or_else(|| ClientError::TransportSend("missing child stdout".to_string()))?;
 
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Value>(256);
-    let (inbound_tx, inbound_rx) = mpsc::channel::<Result<Value, ClientError>>(1024);
+    let (outbound_tx, outbound_rx, inbound_tx, inbound_rx) = transport_channels();
 
-    let inbound_for_writer = inbound_tx.clone();
-    tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            match serde_json::to_string(&message) {
-                Ok(line) => {
-                    if let Err(err) = stdin.write_all(line.as_bytes()).await {
-                        let _ = inbound_for_writer.send(Err(ClientError::Io(err))).await;
-                        break;
-                    }
-                    if let Err(err) = stdin.write_all(b"\n").await {
-                        let _ = inbound_for_writer.send(Err(ClientError::Io(err))).await;
-                        break;
-                    }
-                }
-                Err(err) => {
-                    let _ = inbound_for_writer
-                        .send(Err(ClientError::Serialization(err)))
-                        .await;
-                    break;
-                }
-            }
-        }
-    });
+    tokio::spawn(write_json_frames(
+        outbound_rx,
+        inbound_tx.clone(),
+        async move |payload: String| {
+            stdin
+                .write_all(payload.as_bytes())
+                .await
+                .map_err(ClientError::Io)?;
+            stdin.write_all(b"\n").await.map_err(ClientError::Io)
+        },
+    ));
 
-    let inbound_for_reader = inbound_tx.clone();
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => match serde_json::from_str::<Value>(&line) {
-                    Ok(value) => {
-                        if inbound_for_reader.send(Ok(value)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        if inbound_for_reader
-                            .send(Err(ClientError::InvalidMessage(format!(
-                                "failed to parse JSONL frame: {err}"
-                            ))))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                },
-                Ok(None) => {
-                    let _ = inbound_for_reader
-                        .send(Err(ClientError::TransportClosed))
-                        .await;
-                    break;
-                }
-                Err(err) => {
-                    let _ = inbound_for_reader.send(Err(ClientError::Io(err))).await;
-                    break;
-                }
-            }
-        }
-    });
+    let mut lines = BufReader::new(stdout).lines();
+    tokio::spawn(read_json_frames(
+        inbound_tx,
+        "JSONL frame",
+        async move || match lines.next_line().await {
+            Ok(Some(line)) => RawFrame::Payload(line.into_bytes()),
+            Ok(None) => RawFrame::Closed(ClientError::TransportClosed),
+            Err(err) => RawFrame::Closed(ClientError::Io(err)),
+        },
+    ));
 
     tokio::spawn(async move {
         let _ = child.wait().await;

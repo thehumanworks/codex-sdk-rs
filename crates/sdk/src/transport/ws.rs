@@ -1,10 +1,8 @@
 use futures_util::{SinkExt, StreamExt};
-use serde_json::Value;
-use tokio::sync::mpsc;
 use tokio_tungstenite::{Connector, tungstenite::Message};
 use url::Url;
 
-use super::TransportHandle;
+use super::{RawFrame, TransportHandle, read_json_frames, transport_channels, write_json_frames};
 use crate::error::ClientError;
 
 pub async fn connect_ws_transport(url: &str) -> Result<TransportHandle, ClientError> {
@@ -31,88 +29,34 @@ async fn connect_ws_transport_with_connector(
 
     let (mut ws_write, mut ws_read) = stream.split();
 
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Value>(256);
-    let (inbound_tx, inbound_rx) = mpsc::channel::<Result<Value, ClientError>>(1024);
+    let (outbound_tx, outbound_rx, inbound_tx, inbound_rx) = transport_channels();
 
-    let inbound_for_writer = inbound_tx.clone();
-    tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            match serde_json::to_string(&message) {
-                Ok(payload) => {
-                    if let Err(err) = ws_write.send(Message::Text(payload.into())).await {
-                        let _ = inbound_for_writer
-                            .send(Err(ClientError::TransportSend(format!(
-                                "websocket send failed: {err}"
-                            ))))
-                            .await;
-                        break;
-                    }
-                }
-                Err(err) => {
-                    let _ = inbound_for_writer
-                        .send(Err(ClientError::Serialization(err)))
-                        .await;
-                    break;
-                }
-            }
-        }
-    });
+    tokio::spawn(write_json_frames(
+        outbound_rx,
+        inbound_tx.clone(),
+        async move |payload: String| {
+            ws_write
+                .send(Message::Text(payload.into()))
+                .await
+                .map_err(|err| ClientError::TransportSend(format!("websocket send failed: {err}")))
+        },
+    ));
 
-    tokio::spawn(async move {
-        while let Some(frame) = ws_read.next().await {
-            match frame {
-                Ok(Message::Text(text)) => match serde_json::from_str::<Value>(&text) {
-                    Ok(value) => {
-                        if inbound_tx.send(Ok(value)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        if inbound_tx
-                            .send(Err(ClientError::InvalidMessage(format!(
-                                "failed to parse websocket frame as JSON: {err}"
-                            ))))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                },
-                Ok(Message::Binary(bin)) => match serde_json::from_slice::<Value>(&bin) {
-                    Ok(value) => {
-                        if inbound_tx.send(Ok(value)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        if inbound_tx
-                            .send(Err(ClientError::InvalidMessage(format!(
-                                "failed to parse websocket binary frame as JSON: {err}"
-                            ))))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                },
-                Ok(Message::Close(_)) => {
-                    let _ = inbound_tx.send(Err(ClientError::TransportClosed)).await;
-                    break;
-                }
-                Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
-                Err(err) => {
-                    let _ = inbound_tx
-                        .send(Err(ClientError::TransportSend(format!(
-                            "websocket receive failed: {err}"
-                        ))))
-                        .await;
-                    break;
-                }
+    tokio::spawn(read_json_frames(
+        inbound_tx,
+        "websocket frame as JSON",
+        async move || match ws_read.next().await {
+            Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
+                RawFrame::Payload(message.into_data().to_vec())
             }
-        }
-    });
+            Some(Ok(Message::Close(_))) => RawFrame::Closed(ClientError::TransportClosed),
+            Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => RawFrame::Skip,
+            Some(Err(err)) => RawFrame::Closed(ClientError::TransportSend(format!(
+                "websocket receive failed: {err}"
+            ))),
+            None => RawFrame::Eof,
+        },
+    ));
 
     Ok(TransportHandle {
         outbound: outbound_tx,
