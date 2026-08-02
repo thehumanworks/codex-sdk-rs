@@ -2,11 +2,10 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use codex_app_server_sdk::{DynamicToolSpec, Personality, WebSearchMode};
+use codex_app_server_sdk::{DynamicToolSpec, ModelVerbosity, WebSearchMode};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::ModelVerbosity;
 use crate::error::LunaError;
 
 #[derive(Debug)]
@@ -43,25 +42,6 @@ struct CliDynamicToolSpec {
     name: String,
     description: String,
     input_schema: Value,
-}
-
-fn web_search_mode_as_str(mode: WebSearchMode) -> &'static str {
-    match mode {
-        WebSearchMode::Disabled => "disabled",
-        WebSearchMode::Cached => "cached",
-        WebSearchMode::Live => "live",
-    }
-}
-
-pub(crate) fn parse_personality(raw: &str) -> Result<Personality, LunaError> {
-    match raw.trim() {
-        "none" => Ok(Personality::None),
-        "friendly" => Ok(Personality::Friendly),
-        "pragmatic" => Ok(Personality::Pragmatic),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --personality '{raw}'; expected one of: none, friendly, pragmatic"
-        ))),
-    }
 }
 
 fn parse_json_value(raw: &str, flag: &str) -> Result<Value, LunaError> {
@@ -165,7 +145,7 @@ pub(crate) fn build_thread_config(
         insert_thread_config(
             &mut config,
             "web_search",
-            Value::String(web_search_mode_as_str(mode).to_string()),
+            Value::String(mode.as_str().to_string()),
             "--web-search-mode",
         )?;
     }

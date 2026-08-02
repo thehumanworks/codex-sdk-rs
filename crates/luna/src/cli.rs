@@ -4,12 +4,12 @@ use std::io::{self, IsTerminal, Read};
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use codex_app_server_sdk::{
-    ApprovalMode, ModelReasoningEffort, ModelReasoningSummary, Personality, SandboxMode,
-    WebSearchMode,
+    ApprovalMode, ModelReasoningEffort, ModelReasoningSummary, ModelVerbosity, Personality,
+    SandboxMode, WebSearchMode,
 };
 
 use crate::APP_NAME;
-use crate::config::{normalize_agent_name, parse_personality};
+use crate::config::normalize_agent_name;
 use crate::error::LunaError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,23 +78,6 @@ pub(crate) enum ParsedCommand {
     Version(String),
     Completions(Shell),
     Run(Box<CliArgs>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ModelVerbosity {
-    Low,
-    Medium,
-    High,
-}
-
-impl ModelVerbosity {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
 }
 
 #[derive(Debug, Parser)]
@@ -368,28 +351,44 @@ fn exec_cli_args(args: ExecCliArgs) -> Result<CliArgs, LunaError> {
     cli.reasoning_effort = args
         .reasoning_effort
         .as_deref()
-        .map(parse_reasoning_effort)
+        .map(|raw| {
+            parse_wire_enum::<ModelReasoningEffort>(
+                raw,
+                "--reasoning-effort",
+                ModelReasoningEffort::VARIANTS,
+            )
+        })
         .transpose()?;
     cli.reasoning_summary = args
         .reasoning_summary
         .as_deref()
-        .map(parse_reasoning_summary)
+        .map(|raw| {
+            parse_wire_enum::<ModelReasoningSummary>(
+                raw,
+                "--reasoning-summary",
+                ModelReasoningSummary::VARIANTS,
+            )
+        })
         .transpose()?;
     cli.model_verbosity = args
         .model_verbosity
         .as_deref()
-        .map(parse_model_verbosity)
+        .map(|raw| {
+            parse_wire_enum::<ModelVerbosity>(raw, "--model-verbosity", ModelVerbosity::VARIANTS)
+        })
         .transpose()?;
     cli.config_profile = normalize_optional_string(args.config_profile, "--config-profile")?;
     cli.approval_policy = args
         .approval_policy
         .as_deref()
-        .map(parse_approval_mode)
+        .map(|raw| {
+            parse_wire_enum::<ApprovalMode>(raw, "--approval-policy", ApprovalMode::VARIANTS)
+        })
         .transpose()?;
     cli.sandbox_mode = args
         .sandbox
         .as_deref()
-        .map(parse_sandbox_mode)
+        .map(|raw| parse_wire_enum::<SandboxMode>(raw, "--sandbox", SandboxMode::VARIANTS))
         .transpose()?;
     cli.sandbox_policy_json =
         normalize_optional_string(args.sandbox_policy_json, "--sandbox-policy-json")?;
@@ -409,14 +408,16 @@ fn exec_cli_args(args: ExecCliArgs) -> Result<CliArgs, LunaError> {
     cli.web_search_mode = args
         .web_search_mode
         .as_deref()
-        .map(parse_web_search_mode)
+        .map(|raw| {
+            parse_wire_enum::<WebSearchMode>(raw, "--web-search-mode", WebSearchMode::VARIANTS)
+        })
         .transpose()?;
     cli.dynamic_tools_json =
         normalize_optional_string(args.dynamic_tools_json, "--dynamic-tools-json")?;
     cli.personality = args
         .personality
         .as_deref()
-        .map(parse_personality)
+        .map(|raw| parse_wire_enum::<Personality>(raw, "--personality", Personality::VARIANTS))
         .transpose()?;
     cli.base_instructions =
         normalize_optional_string(args.base_instructions, "--base-instructions")?;
@@ -543,77 +544,17 @@ fn empty_cli_args(command_kind: CommandKind, transport_mode: TransportMode) -> C
     }
 }
 
-fn parse_reasoning_effort(raw: &str) -> Result<ModelReasoningEffort, LunaError> {
-    match raw.trim() {
-        "none" => Ok(ModelReasoningEffort::None),
-        "minimal" => Ok(ModelReasoningEffort::Minimal),
-        "low" => Ok(ModelReasoningEffort::Low),
-        "medium" => Ok(ModelReasoningEffort::Medium),
-        "high" => Ok(ModelReasoningEffort::High),
-        "xhigh" => Ok(ModelReasoningEffort::XHigh),
-        "max" => Ok(ModelReasoningEffort::Max),
-        "ultra" => Ok(ModelReasoningEffort::Ultra),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --reasoning-effort '{raw}'; expected one of: none, minimal, low, medium, high, xhigh, max, ultra"
-        ))),
-    }
-}
-
-fn parse_reasoning_summary(raw: &str) -> Result<ModelReasoningSummary, LunaError> {
-    match raw.trim() {
-        "none" => Ok(ModelReasoningSummary::None),
-        "auto" => Ok(ModelReasoningSummary::Auto),
-        "concise" => Ok(ModelReasoningSummary::Concise),
-        "detailed" => Ok(ModelReasoningSummary::Detailed),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --reasoning-summary '{raw}'; expected one of: none, auto, concise, detailed"
-        ))),
-    }
-}
-
-fn parse_model_verbosity(raw: &str) -> Result<ModelVerbosity, LunaError> {
-    match raw.trim() {
-        "low" => Ok(ModelVerbosity::Low),
-        "medium" => Ok(ModelVerbosity::Medium),
-        "high" => Ok(ModelVerbosity::High),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --model-verbosity '{raw}'; expected one of: low, medium, high"
-        ))),
-    }
-}
-
-fn parse_approval_mode(raw: &str) -> Result<ApprovalMode, LunaError> {
-    match raw.trim() {
-        "never" => Ok(ApprovalMode::Never),
-        "on-request" => Ok(ApprovalMode::OnRequest),
-        "on-failure" => Ok(ApprovalMode::OnFailure),
-        "untrusted" => Ok(ApprovalMode::Untrusted),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --approval-policy '{raw}'; expected one of: never, on-request, on-failure, untrusted"
-        ))),
-    }
-}
-
-fn parse_sandbox_mode(raw: &str) -> Result<SandboxMode, LunaError> {
-    match raw.trim() {
-        "read-only" => Ok(SandboxMode::ReadOnly),
-        "workspace-write" => Ok(SandboxMode::WorkspaceWrite),
-        "danger-full-access" => Ok(SandboxMode::DangerFullAccess),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --sandbox '{raw}'; expected one of: read-only, workspace-write, danger-full-access"
-        ))),
-    }
-}
-
-fn parse_web_search_mode(raw: &str) -> Result<WebSearchMode, LunaError> {
-    match raw.trim() {
-        "disabled" => Ok(WebSearchMode::Disabled),
-        "cached" => Ok(WebSearchMode::Cached),
-        "live" => Ok(WebSearchMode::Live),
-        _ => Err(LunaError::Usage(format!(
-            "invalid --web-search-mode '{raw}'; expected one of: disabled, cached, live"
-        ))),
-    }
+fn parse_wire_enum<T: std::str::FromStr>(
+    raw: &str,
+    flag: &str,
+    variants: &[&str],
+) -> Result<T, LunaError> {
+    T::from_str(raw.trim()).map_err(|_| {
+        LunaError::Usage(format!(
+            "invalid {flag} '{raw}'; expected one of: {}",
+            variants.join(", ")
+        ))
+    })
 }
 
 fn normalize_session_id(raw: &str) -> Result<String, LunaError> {
