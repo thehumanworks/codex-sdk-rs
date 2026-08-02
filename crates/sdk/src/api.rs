@@ -103,6 +103,8 @@ wire_enum! {
         Medium => "medium",
         High => "high",
         XHigh => "xhigh",
+        Max => "max",
+        Ultra => "ultra",
     }
 }
 
@@ -2500,8 +2502,8 @@ mod tests {
     wire_enum_round_trip_test!(
         model_reasoning_effort_round_trips,
         ModelReasoningEffort,
-        [None, Minimal, Low, Medium, High, XHigh],
-        ["none", "minimal", "low", "medium", "high", "xhigh"]
+        [None, Minimal, Low, Medium, High, XHigh, Max, Ultra],
+        ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
     );
     wire_enum_round_trip_test!(
         model_reasoning_summary_round_trips,
@@ -2586,6 +2588,24 @@ collaboration_mode = "plan"
                 "collaboration_mode": "plan",
             })
         );
+    }
+
+    #[test]
+    fn max_and_ultra_reasoning_efforts_serde_as_codex_values() {
+        for (effort, expected) in [
+            (ModelReasoningEffort::Max, "max"),
+            (ModelReasoningEffort::Ultra, "ultra"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(effort).expect("serialize reasoning effort"),
+                json!(expected)
+            );
+            assert_eq!(
+                serde_json::from_value::<ModelReasoningEffort>(json!(expected))
+                    .expect("deserialize reasoning effort"),
+                effort
+            );
+        }
     }
 
     fn thread_summary(

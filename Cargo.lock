@@ -163,6 +163,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f84a88507dbd05c695f2cb5e8558e747179134005e9893882dec964190ed89"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.5.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -625,6 +634,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "luna"
+version = "0.2.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "codex-app-server-sdk",
+ "owo-colors",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1043,18 +1067,6 @@ checksum = "86f4aa3ad99f2088c990dfa82d367e19cb29268ed67c574d10d0a4bfe71f07e0"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "spark"
-version = "0.1.0"
-dependencies = [
- "codex-app-server-sdk",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
- "toml",
 ]
 
 [[package]]

@@ -16,7 +16,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
   - Use `start_ws_daemon` to reuse or start `codex app-server --listen ...` with separate `listen_url` and `connect_url`.
   - Use `start_ws_blocking` when the SDK should own the child process lifecycle instead of leaving a daemon running.
   - `start_and_connect_ws` remains the loopback convenience wrapper for `ws://127.0.0.1:*`, `ws://[::1]:*`, and `ws://localhost:*`; `wss://` URLs are connect-only and are never auto-started.
-  - Daemon logs are written to `/tmp/codex-app-server-sdk/*.log`.
+  - Daemon logs are written with restrictive permissions under the platform temporary directory's `codex-app-server-sdk/` subdirectory and rotate at 10 MiB.
 
 ## Quickstart (stdio)
 
@@ -73,6 +73,9 @@ println!("response: {}", turn.final_response);
 ```
 
 Use `run_streamed(...)` when you need incremental item and lifecycle events.
+`ThreadEventRenderer` converts those events into terminal-agnostic, typed
+markdown fragments, streams text deltas without repeating completed snapshots,
+and provides a visible fallback for every `ThreadItem` variant.
 
 `AgentMessageItem.phase` mirrors the app-server’s optional `agentMessage.phase` field (`commentary` or `final_answer`). Use `message.is_final_answer()` to identify the final turn message from `ItemCompleted`; `Turn.final_response` and `ask(...)` already prefer the `final_answer` item when the server provides it and otherwise fall back to the last completed agent message.
 
@@ -250,76 +253,87 @@ for newly added methods or fields not yet wrapped in typed helpers.
 - `crates/sdk/examples/high_level_resume.rs`
 - `crates/sdk/examples/high_level_output_schema.rs`
 
-## `spark` CLI
+## `luna` CLI
 
-The repository includes a `spark` binary with explicit `exec`, `start`, and `sessions` commands.
-By default `spark exec` connects over websocket to `ws://127.0.0.1:4222` and reuses/auto-starts the loopback app-server daemon:
+The repository includes a `luna` binary with explicit `exec`, `start`, `sessions`, and `doctor` commands. The `exec` command is also available through the short alias `luna x`. See [`crates/luna/README.md`](crates/luna/README.md) for release installation, compatibility, diagnostic schema, integrity verification, and stable exit-code contracts.
+
+By default `luna exec` probes `ws://127.0.0.1:4222` and reuses or starts the loopback app-server daemon when no instance is running. A separate `luna start` call is not required:
 
 ```bash
-cargo run -p spark -- exec "Summarize this repository in one sentence."
+cargo run -p luna -- exec "Summarize this repository in one sentence."
 ```
 
-Use `spark start` to ensure the websocket daemon is running and exit:
+Use `luna start` to ensure the websocket daemon is running and exit:
 
 ```bash
-cargo run -p spark -- start
+cargo run -p luna -- start
 ```
 
-By default, Spark sets Codex `cwd` to the current shell working directory where `spark` is invoked. Use `--cwd` to override:
+By default, Luna sets Codex `cwd` to the current shell working directory where `luna` is invoked. Use `--cwd` to override:
 
 ```bash
-cargo run -p spark -- exec --cwd /path/to/project "Summarize this repository in one sentence."
+cargo run -p luna -- exec --cwd /path/to/project "Summarize this repository in one sentence."
 ```
 
-`spark exec` resolves its websocket URL in this order: `--ws-url`, `CODEX_WEB_SERVER_URL`, then the default `ws://127.0.0.1:4222`.
+`luna exec` resolves its websocket URL in this order: `--ws-url`, `CODEX_APP_SERVER_WS_URL`, legacy `CODEX_WEB_SERVER_URL`, then the default `ws://127.0.0.1:4222`. Flag and environment URLs are connect-only; automatic process management applies only to the implicit default URL.
 
 ```bash
-CODEX_WEB_SERVER_URL=ws://127.0.0.1:5222 cargo run -p spark -- exec "Summarize this repository in one sentence."
+CODEX_APP_SERVER_WS_URL=ws://127.0.0.1:5222 cargo run -p luna -- exec "Summarize this repository in one sentence."
 ```
 
-Use `--no-daemon` with `spark exec` to connect to a websocket URL without spawning a local daemon process:
+Use `--no-daemon` with `luna exec` to connect to a websocket URL without spawning a local daemon process:
 
 ```bash
-cargo run -p spark -- exec --no-daemon "Summarize this repository in one sentence."
+cargo run -p luna -- exec --no-daemon "Summarize this repository in one sentence."
 ```
 
-Use `--stdio` with `spark exec` to force app-server stdio transport instead:
+Use `--stdio` with `luna exec` to force app-server stdio transport instead:
 
 ```bash
-cargo run -p spark -- exec --stdio "Summarize this repository in one sentence."
+cargo run -p luna -- exec --stdio "Summarize this repository in one sentence."
 ```
 
-Use `--final-response` with `spark exec` to print only the final message content:
+Run an offline, redacted installation/configuration check before the first turn:
 
 ```bash
-cargo run -p spark -- exec --final-response "Summarize this repository in one sentence."
+cargo run -p luna -- doctor --summary
+cargo run -p luna -- doctor --json
+```
+
+`luna doctor --live` additionally runs the upstream Codex doctor and checks Luna's selected app-server handshake and account state. Offline doctor does not run upstream network checks or make a model request.
+
+Use `--final-response` with `luna exec` to print only the final message content:
+
+```bash
+cargo run -p luna -- exec --final-response "Summarize this repository in one sentence."
 ```
 
 Resume the most recent session (`codex resume --last` equivalent):
 
 ```bash
-cargo run -p spark -- exec --continue "Follow up on the previous answer."
+cargo run -p luna -- exec --continue "Follow up on the previous answer."
 ```
 
 Resume a specific session id:
 
 ```bash
-cargo run -p spark -- exec --resume thread_123 "Continue from that session."
+cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 ```
 
-`spark` defaults to:
+`luna` defaults to:
 
-- model: `gpt-5.3-codex-spark` (override: `--model`)
-- reasoning effort: `xhigh` (override: `--reasoning-effort`)
-- websocket transport (`ws://127.0.0.1:4222`) unless `spark exec --stdio` is provided
+- model: `gpt-5.6-luna` (override: `--model`)
+- reasoning effort: `max` (override: `--reasoning-effort`)
+- websocket transport (`ws://127.0.0.1:4222`) unless `luna exec --stdio` is provided
 - Codex `cwd` defaults to the invocation directory, unless `--cwd <path>` is provided
-- each completed `agentMessage` is newline-terminated so consecutive messages do not run together
-- `spark exec --continue` and `spark exec --resume <session_id>` are mutually exclusive
+- human output includes agent messages, reasoning, tools, commands, patches, statuses, and errors; semantic color is disabled for non-TTY output and `NO_COLOR`
+- `--json` continues to emit newline-delimited typed event objects without human styling
+- `luna exec --continue` and `luna exec --resume <session_id>` are mutually exclusive
 - transport initialization is started early and overlapped with prompt/config resolution to reduce first-message latency
 
 Additional optional config flags:
 
-- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_WEB_SERVER_URL`
+- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_APP_SERVER_WS_URL` (legacy fallback: `CODEX_WEB_SERVER_URL`)
 - model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`
@@ -330,7 +344,7 @@ Additional optional config flags:
 Example with explicit overrides:
 
 ```bash
-cargo run -p spark -- \
+cargo run -p luna -- \
   exec \
   --model gpt-5.3-codex \
   --reasoning-effort high \
@@ -344,15 +358,14 @@ cargo run -p spark -- \
 ```
 
 Agent profiles are optional and are loaded via `--agent <name>` from `~/.codex/config.toml` under `[agents.<name>]`.
-When `--stdio` is used, `spark` resolves the Codex CLI path with `which codex` and exits early if no path is returned.
-If startup fails with a codex lookup error, run `which codex` and ensure your shell PATH includes the desired Codex CLI install.
+Luna resolves the Codex CLI with OS-native `PATH` traversal and executable suffix rules. Set `CODEX_BINARY` to an explicit executable when Codex is installed outside `PATH`. Missing dependencies and unauthenticated accounts fail before a turn with a stable category and an actionable `luna doctor` next step.
 `[agents.<name>].config_file` points to a role TOML file (relative paths resolve from the config file directory).
-`spark` maps the role to thread `developer_instructions` in this order:
+`luna` maps the role to thread `developer_instructions` in this order:
 - `developer_instructions` from the role config file
 - `model_instructions_file` (file contents, path resolved relative to the role config file)
 - `[agents.<name>].description` as a fallback
 
-See `docs/spark-session-resumption.md` for additional details.
+See `docs/luna-session-resumption.md` for additional details.
 
 ## `agx` CLI
 
@@ -372,7 +385,7 @@ These tests execute against a real local `codex app-server` process:
 cargo test -p codex-app-server-sdk --test integration_stdio -- --nocapture
 cargo test -p codex-app-server-sdk --test integration_api_stdio -- --nocapture
 cargo test -p codex-app-server-sdk --test integration_ws -- --nocapture
-cargo test -p spark --test integration_spark -- --nocapture
+cargo test -p luna --test integration_luna -- --nocapture
 ```
 
 ## License

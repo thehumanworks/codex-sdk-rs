@@ -1,0 +1,116 @@
+name: Release Luna
+
+on:
+  push:
+    tags:
+      - "luna-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust target
+        run: rustup target add "${{ matrix.target }}"
+      - name: Build Luna
+        env:
+          LUNA_BUILD_COMMIT: ${{ github.sha }}
+          LUNA_BUILD_TARGET: ${{ matrix.target }}
+        run: cargo build --locked --release -p luna --target "${{ matrix.target }}"
+      - name: Package and smoke test
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          package="$TAG-$TARGET"
+          mkdir "$package"
+          cp "target/$TARGET/release/luna" "$package/luna"
+          cp crates/luna/README.md "$package/README.md"
+          "$package/luna" --version
+          "$package/luna" completions bash > luna.bash
+          set +e
+          CODEX_BINARY=/definitely/missing/codex "$package/luna" doctor --json > doctor.json
+          doctor_status=$?
+          set -e
+          test "$doctor_status" -eq 1
+          grep -q '"code": "codex.binary.missing"' doctor.json
+          tar -czf "$package.tar.gz" -C "$package" luna README.md
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+          else
+            shasum -a 256 "$package.tar.gz" > "$package.tar.gz.sha256"
+          fi
+      - name: Attest release archive
+        uses: actions/attest-build-provenance@78e6cbd37d0ac1a40113c04f2037dacf1ea3f12e # v4
+        with:
+          subject-path: ${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+      - name: Upload release archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: luna-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            ${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+            ${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Download release archives
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: luna-*
+          merge-multiple: true
+          path: dist
+      - name: Build and verify release manifest
+        env:
+          COMMIT: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sed -E 's#^([0-9a-f]+)[[:space:]]+.*[/\\]#\1  #' ./*.sha256 | sort > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          jq -n \
+            --arg tag "$TAG" \
+            --arg commit "$COMMIT" \
+            --arg toolchain "$(rustc --version)" \
+            --rawfile checksums SHA256SUMS \
+            '{schema_version: 1, tag: $tag, commit: $commit, rust_toolchain: $toolchain, checksums: ($checksums | split("\n") | map(select(length > 0)))}' \
+            > release-manifest.json
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --verify-tag --generate-notes --title "$TAG"
+          fi

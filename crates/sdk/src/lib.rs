@@ -24,6 +24,7 @@ pub use client::{
 };
 pub use codex_app_server_sdk_macros::{OpenAiSerializable, openai_type};
 pub use error::{ClientError, RpcError};
+pub use events::render::{RenderedItem, RenderedItemKind, ThreadEventRenderer, render_thread_item};
 pub use events::{ServerEvent, ServerNotification, ServerRequestEvent};
 pub use protocol::{notifications, requests, responses, server_requests, shared};
 pub use schema::{

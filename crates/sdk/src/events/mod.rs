@@ -5,6 +5,8 @@ use crate::protocol::notifications as n;
 use crate::protocol::server_requests as sr;
 use crate::protocol::shared::RequestId;
 
+pub mod render;
+
 #[derive(Debug, Clone)]
 pub enum ServerEvent {
     Notification(ServerNotification),
