@@ -500,9 +500,18 @@ pub struct Turn {
 pub struct StreamedTurn {
     receiver: mpsc::Receiver<Result<ThreadEvent, ClientError>>,
     task: JoinHandle<()>,
+    turn_id: String,
 }
 
 impl StreamedTurn {
+    /// Returns the app-server turn ID for this stream.
+    ///
+    /// Callers can pass this ID to [`Thread::interrupt`] while continuing to
+    /// drain the stream until its terminal event arrives.
+    pub fn turn_id(&self) -> &str {
+        &self.turn_id
+    }
+
     pub async fn next_event(&mut self) -> Option<Result<ThreadEvent, ClientError>> {
         self.receiver.recv().await
     }
@@ -1187,11 +1196,16 @@ impl Thread {
             .await
             .expect("receiver held locally");
 
+        let stream_turn_id = turn_id.clone();
         let task = tokio::spawn(async move {
-            pump_turn_events(server_events, tx, thread_id, turn_id).await;
+            pump_turn_events(server_events, tx, thread_id, stream_turn_id).await;
         });
 
-        Ok(StreamedTurn { receiver: rx, task })
+        Ok(StreamedTurn {
+            receiver: rx,
+            task,
+            turn_id,
+        })
     }
 
     pub async fn run(

@@ -1,8 +1,8 @@
 # Luna
 
-Luna is an opinionated one-shot CLI for the Codex app-server. It defaults to the
-`gpt-5.6-luna` model, maximum reasoning effort, and a reusable local WebSocket
-app-server.
+Luna is an opinionated interactive and one-shot CLI for the Codex app-server. It
+defaults to the `gpt-5.6-luna` model, maximum reasoning effort, and a reusable
+local WebSocket app-server.
 
 ## Install a release
 
@@ -85,6 +85,32 @@ luna exec --resume <SESSION_ID> "Continue this session."
 luna sessions
 luna sessions --all
 ```
+
+## Chat
+
+`luna chat` opens a multi-turn Ratatui interface with a monochrome lunar theme,
+streaming activity, a persistent moon splash, history, scrolling, and inline
+completion:
+
+```sh
+luna chat
+luna chat --continue
+luna chat --stdio --model gpt-5.6-luna
+luna chat "Begin by summarizing this repository."
+```
+
+`chat` and `exec` share the exact same argument definition, including transport,
+session, model, reasoning, policy, config, schema, and optional initial-prompt
+arguments. In chat, `--final-response` hides intermediate activity and `--json`
+shows the typed event JSON inside the transcript. Chat requires interactive stdin
+and stdout; use `luna exec` for pipes and scripts.
+
+Type `/` to autocomplete host commands. `/compact` requests context compaction;
+`/effort [level]` and `/model [name]` inspect or change later turns; `/skills`
+lists enabled Codex skills; `/skill <name>` or a leading `$` completes a skill
+mention. `/help`, `/clear`, and `/quit` are also available. Tab accepts the ghost
+suggestion, Up/Down selects suggestions or prompt history, PgUp/PgDn scrolls, and
+Ctrl-C interrupts a running turn.
 
 Run `luna --help` for the complete typed thread/turn option surface.
 Without `--fast`, Luna explicitly selects the `default` service tier. With

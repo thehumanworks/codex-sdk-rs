@@ -10,38 +10,7 @@ pub(crate) async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<()
 
     while let Some(next) = streamed.next_event().await {
         let event = next?;
-        let json_event = match &event {
-            ThreadEvent::ThreadStarted { thread_id } => {
-                serde_json::json!({ "type": "thread.started", "threadId": thread_id })
-            }
-            ThreadEvent::TurnStarted => serde_json::json!({ "type": "turn.started" }),
-            ThreadEvent::TurnCompleted { usage } => {
-                let mut obj = serde_json::json!({ "type": "turn.completed" });
-                if let Some(usage) = usage {
-                    obj["usage"] = serde_json::json!({
-                        "inputTokens": usage.input_tokens,
-                        "cachedInputTokens": usage.cached_input_tokens,
-                        "outputTokens": usage.output_tokens,
-                    });
-                }
-                obj
-            }
-            ThreadEvent::TurnFailed { error } => {
-                serde_json::json!({ "type": "turn.failed", "error": { "message": error.message } })
-            }
-            ThreadEvent::ItemStarted { item } => {
-                serde_json::json!({ "type": "item.started", "item": thread_item_to_json(item) })
-            }
-            ThreadEvent::ItemUpdated { item } => {
-                serde_json::json!({ "type": "item.updated", "item": thread_item_to_json(item) })
-            }
-            ThreadEvent::ItemCompleted { item } => {
-                serde_json::json!({ "type": "item.completed", "item": thread_item_to_json(item) })
-            }
-            ThreadEvent::Error { message } => {
-                serde_json::json!({ "type": "error", "message": message })
-            }
-        };
+        let json_event = thread_event_to_json(&event);
 
         let line = serde_json::to_string(&json_event)
             .map_err(|err| LunaError::Protocol(format!("failed to serialize event: {err}")))?;
@@ -60,6 +29,41 @@ pub(crate) async fn stream_json_events(streamed: &mut StreamedTurn) -> Result<()
     }
 
     Ok(())
+}
+
+pub(crate) fn thread_event_to_json(event: &ThreadEvent) -> Value {
+    match event {
+        ThreadEvent::ThreadStarted { thread_id } => {
+            serde_json::json!({ "type": "thread.started", "threadId": thread_id })
+        }
+        ThreadEvent::TurnStarted => serde_json::json!({ "type": "turn.started" }),
+        ThreadEvent::TurnCompleted { usage } => {
+            let mut obj = serde_json::json!({ "type": "turn.completed" });
+            if let Some(usage) = usage {
+                obj["usage"] = serde_json::json!({
+                    "inputTokens": usage.input_tokens,
+                    "cachedInputTokens": usage.cached_input_tokens,
+                    "outputTokens": usage.output_tokens,
+                });
+            }
+            obj
+        }
+        ThreadEvent::TurnFailed { error } => {
+            serde_json::json!({ "type": "turn.failed", "error": { "message": error.message } })
+        }
+        ThreadEvent::ItemStarted { item } => {
+            serde_json::json!({ "type": "item.started", "item": thread_item_to_json(item) })
+        }
+        ThreadEvent::ItemUpdated { item } => {
+            serde_json::json!({ "type": "item.updated", "item": thread_item_to_json(item) })
+        }
+        ThreadEvent::ItemCompleted { item } => {
+            serde_json::json!({ "type": "item.completed", "item": thread_item_to_json(item) })
+        }
+        ThreadEvent::Error { message } => {
+            serde_json::json!({ "type": "error", "message": message })
+        }
+    }
 }
 
 pub(crate) fn thread_item_to_json(item: &ThreadItem) -> Value {

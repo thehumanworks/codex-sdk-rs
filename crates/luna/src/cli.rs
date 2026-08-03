@@ -27,12 +27,13 @@ pub(crate) enum TransportMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandKind {
     Exec,
+    Chat,
     Start,
     Sessions,
     Doctor,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct CliArgs {
     pub(crate) command_kind: CommandKind,
     pub(crate) no_daemon: bool,
@@ -85,7 +86,7 @@ pub(crate) enum ParsedCommand {
 #[command(
     name = "luna",
     version,
-    about = "Opinionated one-shot Codex app-server CLI",
+    about = "Opinionated Codex app-server CLI",
     disable_help_subcommand = true
 )]
 pub(crate) struct CliParser {
@@ -97,7 +98,9 @@ pub(crate) struct CliParser {
 enum CliCommand {
     /// Run one Codex turn from an argument or stdin
     #[command(alias = "x")]
-    Exec(Box<ExecCliArgs>),
+    Exec(Box<TurnCliArgs>),
+    /// Start an interactive multi-turn Codex chat
+    Chat(Box<TurnCliArgs>),
     /// Reuse or start a loopback WebSocket app-server, then exit
     Start(StartCliArgs),
     /// List recorded sessions ordered by last activity
@@ -122,7 +125,7 @@ struct TransportCliArgs {
 }
 
 #[derive(Debug, Args)]
-struct ExecCliArgs {
+struct TurnCliArgs {
     #[command(flatten)]
     transport: TransportCliArgs,
     /// Load ~/.codex/config.toml [agents.NAME]
@@ -219,13 +222,13 @@ struct ExecCliArgs {
     /// Merge a JSON object into raw turn/start extras
     #[arg(long)]
     turn_extra_json: Option<String>,
-    /// Print only the final agent message
+    /// Show only final agent message content
     #[arg(long, conflicts_with = "json")]
     final_response: bool,
-    /// Print turn events as JSONL
+    /// Show turn events as JSONL
     #[arg(long, conflicts_with = "final_response")]
     json: bool,
-    /// Prompt text; read from stdin when omitted
+    /// Prompt text; exec reads stdin when omitted, chat opens the composer
     #[arg(value_name = "PROMPT")]
     prompt: Vec<String>,
 }
@@ -295,7 +298,14 @@ pub(crate) fn parse_cli_args(
     };
 
     match parsed.command {
-        CliCommand::Exec(args) => Ok(ParsedCommand::Run(Box::new(exec_cli_args(*args)?))),
+        CliCommand::Exec(args) => Ok(ParsedCommand::Run(Box::new(turn_cli_args(
+            CommandKind::Exec,
+            *args,
+        )?))),
+        CliCommand::Chat(args) => Ok(ParsedCommand::Run(Box::new(turn_cli_args(
+            CommandKind::Chat,
+            *args,
+        )?))),
         CliCommand::Start(args) => Ok(ParsedCommand::Run(Box::new(start_cli_args(args)?))),
         CliCommand::Sessions(args) => Ok(ParsedCommand::Run(Box::new(sessions_cli_args(args)?))),
         CliCommand::Doctor(args) => Ok(ParsedCommand::Run(Box::new(doctor_cli_args(args)?))),
@@ -317,7 +327,7 @@ fn normalize_legacy_cli_args(mut args: Vec<String>) -> Result<Vec<String>, LunaE
             if args.iter().any(|arg| {
                 matches!(
                     arg.as_str(),
-                    "exec" | "x" | "start" | "sessions" | "doctor" | "completions"
+                    "exec" | "x" | "chat" | "start" | "sessions" | "doctor" | "completions"
                 )
             }) {
                 return Err(LunaError::Usage(
@@ -335,9 +345,9 @@ fn normalize_legacy_cli_args(mut args: Vec<String>) -> Result<Vec<String>, LunaE
     Ok(args)
 }
 
-fn exec_cli_args(args: ExecCliArgs) -> Result<CliArgs, LunaError> {
+fn turn_cli_args(command_kind: CommandKind, args: TurnCliArgs) -> Result<CliArgs, LunaError> {
     let transport_mode = transport_mode(args.transport.stdio);
-    let mut cli = empty_cli_args(CommandKind::Exec, transport_mode);
+    let mut cli = empty_cli_args(command_kind, transport_mode);
     cli.no_daemon = args.transport.no_daemon;
     cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
     cli.agent = args
@@ -655,6 +665,53 @@ mod tests {
         assert!(!cli.final_response_only);
         assert_eq!(cli.transport_mode, TransportMode::WebSocket);
         assert_eq!(cli.prompt_parts, vec!["hello"]);
+    }
+
+    #[test]
+    fn chat_and_exec_share_the_exact_argument_contract() {
+        let command = CliParser::command();
+        let exec = command.find_subcommand("exec").expect("exec command");
+        let chat = command.find_subcommand("chat").expect("chat command");
+        let signature = |command: &clap::Command| {
+            command
+                .get_arguments()
+                .map(|argument| {
+                    (
+                        argument.get_id().as_str().to_string(),
+                        argument.get_long().map(str::to_string),
+                        argument.get_short(),
+                        format!("{:?}", argument.get_action()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(signature(exec), signature(chat));
+
+        let flags = [
+            "--stdio",
+            "--agent=writer",
+            "--cwd=/tmp/project",
+            "--model=gpt-custom",
+            "--reasoning-effort=high",
+            "--fast",
+            "--sandbox=workspace-write",
+            "--web-search-mode=live",
+            "--final-response",
+            "hello",
+        ];
+        let parse = |command: &str| {
+            let ParsedCommand::Run(cli) = parse_cli_args(
+                std::iter::once(command.to_string()).chain(flags.iter().map(|arg| arg.to_string())),
+            )
+            .expect("shared turn args") else {
+                panic!("expected run command");
+            };
+            *cli
+        };
+        let mut exec = parse("exec");
+        let chat = parse("chat");
+        exec.command_kind = CommandKind::Chat;
+        assert_eq!(exec, chat);
     }
 
     #[test]

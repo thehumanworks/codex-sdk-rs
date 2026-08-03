@@ -172,6 +172,23 @@ async fn luna_dependency_failure_has_stable_code_and_exit_status()
 }
 
 #[tokio::test]
+async fn luna_chat_rejects_non_interactive_io_before_connecting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = tokio::process::Command::new(luna_binary());
+    cmd.args(["chat", "--stdio"])
+        .env("CODEX_BINARY", "/definitely/missing/codex");
+    let output = tokio::time::timeout(TEST_TIMEOUT, cmd.output()).await??;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("[luna.usage]"));
+    assert!(stderr.contains("luna exec"));
+    assert!(!stderr.contains("/definitely/missing/codex"));
+    assert!(!stderr.contains("\u{1b}["));
+    Ok(())
+}
+
+#[tokio::test]
 async fn luna_fast_resume_flag_accepts_session_id() -> Result<(), Box<dyn std::error::Error>> {
     let _guard = INTEGRATION_LOCK.lock().await;
     let env = shared_env();

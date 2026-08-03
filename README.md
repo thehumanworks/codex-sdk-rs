@@ -262,13 +262,26 @@ for newly added methods or fields not yet wrapped in typed helpers.
 
 ## `luna` CLI
 
-The repository includes a `luna` binary with explicit `exec`, `start`, `sessions`, and `doctor` commands. The `exec` command is also available through the short alias `luna x`. See [`crates/luna/README.md`](crates/luna/README.md) for release installation, compatibility, diagnostic schema, integrity verification, and stable exit-code contracts.
+The repository includes a `luna` binary with explicit `exec`, `chat`, `start`, `sessions`, and `doctor` commands. The `exec` command is also available through the short alias `luna x`. See [`crates/luna/README.md`](crates/luna/README.md) for release installation, interactive controls, compatibility, diagnostic schema, integrity verification, and stable exit-code contracts.
 
 By default `luna exec` probes `ws://127.0.0.1:4222` and reuses or starts the loopback app-server daemon when no instance is running. A separate `luna start` call is not required:
 
 ```bash
 cargo run -p luna -- exec "Summarize this repository in one sentence."
 ```
+
+Open the monochrome, multi-turn Ratatui interface with the same complete flag
+surface as `exec`:
+
+```bash
+cargo run -p luna -- chat
+cargo run -p luna -- chat --continue
+```
+
+Chat autocompletes `/compact`, `/effort`, `/model`, `/skills`, and other host
+commands. Model and enabled-skill metadata come from the connected app-server;
+Tab accepts inline suggestions and Ctrl-C interrupts the active server turn.
+Interactive stdin and stdout are required.
 
 Use `luna start` to ensure the websocket daemon is running and exit:
 

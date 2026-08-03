@@ -80,6 +80,10 @@ The question is therefore not “what feature can Luna copy next?” It is:
 | Refactor to `clap` and shared CLI modules | Cuts parser drift, generates help/completions, and improves testability | Internal quality alone does not create a user outcome | **Keep as an enabler**, bounded by the first-run contract |
 | Bundle the Codex CLI/app-server inside Luna | Appears to create a single artifact | Couples security/update cadence, auth, licensing, and lifecycle; obscures the real dependency | **Reject** |
 
+> Update (2026-08-03): the later explicit product decision to ship `luna chat`
+> supersedes this proposal's TUI rejection. The portable-first-run work remains
+> the distribution baseline; chat is now Luna's differentiated interactive mode.
+
 ### Iteration log
 
 #### Iteration 1: portable task manifest

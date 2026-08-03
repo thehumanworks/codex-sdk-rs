@@ -11,6 +11,7 @@ use owo_colors::{OwoColorize, Style};
 use crate::error::LunaError;
 
 pub(crate) use json::stream_json_events;
+pub(crate) use json::thread_event_to_json;
 #[cfg(test)]
 pub(crate) use json::thread_item_to_json;
 

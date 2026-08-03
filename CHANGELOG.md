@@ -87,6 +87,9 @@
   `spawn_blocking` instead of a hand-rolled launcher thread, startup lock
   keyed by `(host, port)` so distinct targets don't serialize, and one
   websocket-handshake liveness probe shared by startup and shutdown.
+- **Streamed turns expose their active ID.** `StreamedTurn::turn_id()` lets
+  interactive consumers request `Thread::interrupt(...)` while continuing to
+  drain the stream through its terminal event.
 - **Item status enums expose `as_str()`** (`CommandExecutionStatus`,
   `PatchApplyStatus`, `McpToolCallStatus`, `PatchChangeKind`) with
   canonical wire spellings.

@@ -1,8 +1,10 @@
+mod chat;
 mod completions;
 mod doctor;
 mod exec;
 mod sessions;
 mod start;
+mod turn;
 
 use std::env;
 use std::process::ExitCode;
@@ -27,6 +29,7 @@ pub(crate) async fn dispatch(command: ParsedCommand) -> Result<ExitCode, LunaErr
         ParsedCommand::Completions(shell) => completions::run(shell),
         ParsedCommand::Run(cli) => match cli.command_kind {
             CommandKind::Exec => exec::run(*cli).await,
+            CommandKind::Chat => chat::run(*cli).await,
             CommandKind::Start => start::run(*cli).await,
             CommandKind::Sessions => sessions::run(*cli).await,
             CommandKind::Doctor => doctor::run(*cli).await,
