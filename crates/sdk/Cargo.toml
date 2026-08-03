@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 url = "2"
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+http = "1"
 futures-util = "0.3"
 
 [dev-dependencies]

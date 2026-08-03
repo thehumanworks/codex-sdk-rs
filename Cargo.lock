@@ -241,6 +241,7 @@ dependencies = [
  "anyhow",
  "codex-app-server-sdk-macros",
  "futures-util",
+ "http",
  "rcgen",
  "rustls",
  "schemars",

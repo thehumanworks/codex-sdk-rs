@@ -278,10 +278,10 @@ cargo run -p luna -- chat
 cargo run -p luna -- chat --continue
 ```
 
-Chat autocompletes `/compact`, `/effort`, `/model`, `/skills`, and other host
-commands. Model and enabled-skill metadata come from the connected app-server;
-Tab accepts inline suggestions and Ctrl-C interrupts the active server turn.
-Interactive stdin and stdout are required.
+Chat autocompletes `/compact`, `/effort`, `/skills`, and other host commands
+(there is no `/model` picker; chat uses Luna). Enabled-skill metadata comes from
+the connected app-server; Tab accepts inline suggestions and Ctrl-C interrupts
+the active server turn. Interactive stdin and stdout are required.
 
 Use `luna start` to ensure the websocket daemon is running and exit:
 
@@ -354,7 +354,7 @@ cargo run -p luna -- exec --resume thread_123 "Continue from that session."
 
 Additional optional config flags:
 
-- transport/session: `--ws-url`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_APP_SERVER_WS_URL` (legacy fallback: `CODEX_WEB_SERVER_URL`)
+- transport/session: `--ws-url`, `--ws-auth-token`, `--ws-auth-token-file`, `--stdio`, `--no-daemon`, `--continue`, `--resume`, env `CODEX_APP_SERVER_WS_URL` (legacy fallback: `CODEX_WEB_SERVER_URL`)
 - model/reasoning: `--model`, `--model-provider`, `--reasoning-effort`, `--reasoning-summary`, `--model-verbosity`, `--fast`
 - policy/sandbox: `--approval-policy`, `--sandbox`, `--sandbox-policy-json`, `--sandbox-network-access-enabled|--sandbox-network-access-disabled`, `--sandbox-writable-root`, `--ephemeral`
 - network/search: `--web-search-mode`

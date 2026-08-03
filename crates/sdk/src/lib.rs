@@ -31,6 +31,7 @@ pub use protocol::{notifications, requests, responses, server_requests, shared};
 pub use schema::{OpenAiSerializable, openai_json_schema_for};
 pub use schemars::{self, JsonSchema};
 pub use serde::{self, Deserialize, Serialize};
+pub use transport::ws::websocket_url_allows_auth_token;
 
 #[doc(hidden)]
 pub use serde_json as __private_serde_json;

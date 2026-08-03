@@ -66,6 +66,7 @@ fn ws_client_config(url: &str) -> WsConfig {
     WsConfig {
         url: url.to_string(),
         options: ClientOptions::default(),
+        auth_token: None,
     }
 }
 
@@ -167,6 +168,7 @@ async fn test_connect_ws_does_not_start_daemon() {
     let config = WsConfig {
         url: url.to_string(),
         options: ClientOptions::default(),
+        auth_token: None,
     };
     let result = CodexClient::connect_ws(config).await;
     assert!(

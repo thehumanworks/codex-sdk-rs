@@ -13,6 +13,7 @@ Tokio Rust SDK for Codex App Server JSON-RPC over JSONL.
 - `stdio`: spawn `codex app-server` locally.
 - `ws`: websocket transport with explicit startup and connection APIs.
   - Use `connect_ws` to connect directly to `ws://` or `wss://` endpoints without any process management.
+  - Optional `WsConfig.auth_token` sends `Authorization: Bearer <token>` during the websocket HTTP upgrade (capability token or pre-signed JWT).
   - Use `start_ws_daemon` to reuse or start `codex app-server --listen ...` with separate `listen_url` and `connect_url`.
   - Use `start_ws_blocking` when the SDK should own the child process lifecycle instead of leaving a daemon running.
   - `start_and_connect_ws` remains the loopback convenience wrapper for `ws://127.0.0.1:*`, `ws://[::1]:*`, and `ws://localhost:*`; `wss://` URLs are connect-only and are never auto-started.

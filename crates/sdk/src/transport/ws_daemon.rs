@@ -246,7 +246,7 @@ impl WsServerHandle {
     /// so the target counts as released.
     async fn connect_target_released(&self) -> bool {
         !matches!(
-            probe_app_server(&self.connect_url).await,
+            probe_app_server(&self.connect_url, None).await,
             Ok(ProbeState::Reachable)
         )
     }
@@ -369,12 +369,14 @@ enum ProbeState {
 pub async fn ensure_local_ws_app_server(
     url: &str,
     env: &HashMap<String, String>,
+    auth_token: Option<&str>,
 ) -> Result<(), ClientError> {
     let Some(target) = parse_managed_ws_target(url)? else {
         return Ok(());
     };
 
-    let _handle = start_ws_server_internal(target, env, true, WsStartMode::Daemon).await?;
+    let _handle =
+        start_ws_server_internal(target, env, true, WsStartMode::Daemon, auth_token).await?;
     Ok(())
 }
 
@@ -383,7 +385,7 @@ pub async fn start_ws_server(
     mode: WsStartMode,
 ) -> Result<WsServerHandle, ClientError> {
     let target = build_start_target(config)?;
-    start_ws_server_internal(target, &config.env, config.reuse_existing, mode).await
+    start_ws_server_internal(target, &config.env, config.reuse_existing, mode, None).await
 }
 
 async fn start_ws_server_internal(
@@ -391,22 +393,23 @@ async fn start_ws_server_internal(
     env: &HashMap<String, String>,
     reuse_existing: bool,
     mode: WsStartMode,
+    auth_token: Option<&str>,
 ) -> Result<WsServerHandle, ClientError> {
-    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode).await? {
+    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode, auth_token).await? {
         return Ok(handle);
     }
 
     let lock = startup_lock(&target.listen);
     let _guard = lock.lock().await;
 
-    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode).await? {
+    if let Some(handle) = existing_server_handle(&target, reuse_existing, mode, auth_token).await? {
         return Ok(handle);
     }
 
     match mode {
         WsStartMode::Daemon => {
             spawn_daemon(&target, env).await?;
-            wait_for_ready(&target, None).await?;
+            wait_for_ready(&target, None, auth_token).await?;
             Ok(WsServerHandle::daemon_started(
                 target.listen_url,
                 target.connect_url,
@@ -415,7 +418,7 @@ async fn start_ws_server_internal(
         }
         WsStartMode::Blocking => {
             let mut child = spawn_owned_process(&target, env)?;
-            wait_for_ready(&target, Some(&mut child)).await?;
+            wait_for_ready(&target, Some(&mut child), auth_token).await?;
             Ok(WsServerHandle::blocking_started(
                 target.listen_url,
                 target.connect_url,
@@ -429,8 +432,9 @@ async fn existing_server_handle(
     target: &WsStartTarget,
     reuse_existing: bool,
     mode: WsStartMode,
+    auth_token: Option<&str>,
 ) -> Result<Option<WsServerHandle>, ClientError> {
-    match probe_app_server(&target.connect_url).await {
+    match probe_app_server(&target.connect_url, auth_token).await {
         Ok(ProbeState::Reachable) => {
             if reuse_existing {
                 Ok(Some(WsServerHandle::from_reused_existing(
@@ -575,8 +579,10 @@ fn open_daemon_log(path: &Path) -> std::io::Result<File> {
 /// `Ok(Unavailable)` when nothing (or nothing yet) is listening, and
 /// `Err(description)` when the port is occupied by something that is not a
 /// websocket app-server.
-async fn probe_app_server(url: &str) -> Result<ProbeState, String> {
-    let connect = tokio_tungstenite::connect_async(url);
+async fn probe_app_server(url: &str, auth_token: Option<&str>) -> Result<ProbeState, String> {
+    let request =
+        crate::transport::ws::build_ws_request(url, auth_token).map_err(|err| err.to_string())?;
+    let connect = tokio_tungstenite::connect_async(request);
     match tokio::time::timeout(PROBE_TIMEOUT, connect).await {
         Ok(Ok((mut stream, _))) => {
             let _ = stream.close(None).await;
@@ -719,6 +725,7 @@ fn codex_binary(env: &HashMap<String, String>) -> String {
 async fn wait_for_ready(
     target: &WsStartTarget,
     mut child: Option<&mut Child>,
+    auth_token: Option<&str>,
 ) -> Result<(), ClientError> {
     let deadline = Instant::now() + STARTUP_TIMEOUT;
 
@@ -735,7 +742,7 @@ async fn wait_for_ready(
             });
         }
 
-        match probe_app_server(&target.connect_url).await {
+        match probe_app_server(&target.connect_url, auth_token).await {
             Ok(ProbeState::Reachable) => return Ok(()),
             Ok(ProbeState::Unavailable) => {}
             Err(probe_failure) => {

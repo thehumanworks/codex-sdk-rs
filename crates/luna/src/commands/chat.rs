@@ -8,7 +8,10 @@ use codex_app_server_sdk::{
     ModelReasoningEffort, RenderedItem, RenderedItemKind, Thread, ThreadEvent, ThreadEventRenderer,
     ThreadItem, TurnOptions, requests, responses,
 };
+use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{Clear, ClearType};
 use futures_util::StreamExt;
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
@@ -27,35 +30,14 @@ const EFFORTS: [&str; 8] = [
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 
-const COMMANDS: [(&str, &str); 8] = [
+const COMMANDS: [(&str, &str); 7] = [
     ("/help", "show chat commands and keys"),
     ("/compact", "compact this conversation's context"),
     ("/effort", "show or set reasoning effort"),
-    ("/model", "show or set the model"),
     ("/skills", "list available Codex skills"),
     ("/skill", "insert a skill mention"),
     ("/clear", "clear the visible transcript"),
     ("/quit", "leave Luna chat"),
-];
-
-const MOON: [&str; 10] = [
-    "           _..._",
-    "       .-'`     `'-.",
-    "     .'             `.",
-    "    /    o       .    \\",
-    "   ;        .          ;",
-    "   |   .         o     |",
-    "   ;       o            ;",
-    "    \\          .       /",
-    "     `.             .'",
-    "       `'-._____.-'`",
-];
-
-const LUNA_LOGO: [&str; 4] = [
-    " _      _   _ _   _    _",
-    "| |    | | | | \\ | |  / \\",
-    "| |___ | |_| | |\\  | / _ \\",
-    "|_____| \\___/|_| \\_|/_/ \\_\\",
 ];
 
 pub(super) async fn run(mut cli: CliArgs) -> Result<ExitCode, LunaError> {
@@ -76,6 +58,12 @@ pub(super) async fn run(mut cli: CliArgs) -> Result<ExitCode, LunaError> {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
     let initial_effort = cli.reasoning_effort.unwrap_or(ModelReasoningEffort::Max);
 
+    execute!(
+        io::stdout(),
+        Clear(ClearType::All),
+        Clear(ClearType::Purge),
+        MoveTo(0, 0)
+    )?;
     let mut terminal = ratatui::try_init()?;
     let result = run_in_terminal(
         &mut terminal,
@@ -119,12 +107,10 @@ async fn run_in_terminal(
     let prepared = turn::prepare(cli).await?;
     app.model = prepared.model.clone();
     app.effort = prepared.reasoning_effort;
-    app.status = "loading models and skills".to_string();
+    app.status = "loading skills".to_string();
     terminal.draw(|frame| app.render(frame))?;
 
-    let (models, skills, warnings) =
-        load_metadata(&prepared.codex, &prepared.working_directory).await;
-    app.models = models;
+    let (skills, warnings) = load_metadata(&prepared.codex, &prepared.working_directory).await;
     app.skills = skills;
     app.metadata_warning = warnings.join("; ");
     app.status = "ready".to_string();
@@ -288,35 +274,13 @@ async fn execute_command(
         ChatCommand::ShowEffort => app.append_status(format!(
             "Current reasoning effort: {}\nAvailable: {}",
             app.effort.as_str(),
-            app.effort_names().join(", ")
+            EFFORTS.join(", ")
         )),
         ChatCommand::SetEffort(effort) => {
             app.effort = effort;
             app.append_status(format!(
                 "Reasoning effort set to {} for subsequent turns.",
                 effort.as_str()
-            ));
-        }
-        ChatCommand::ShowModel => {
-            let available = if app.models.is_empty() {
-                "model catalog unavailable".to_string()
-            } else {
-                app.models
-                    .iter()
-                    .map(|model| model.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            app.append_status(format!(
-                "Current model: {}\nAvailable: {available}",
-                app.model
-            ));
-        }
-        ChatCommand::SetModel(model) => {
-            app.model = model;
-            app.append_status(format!(
-                "Model set to {} for subsequent turns.",
-                app.model
             ));
         }
         ChatCommand::Skills => {
@@ -360,8 +324,6 @@ enum ChatCommand {
     Compact,
     ShowEffort,
     SetEffort(ModelReasoningEffort),
-    ShowModel,
-    SetModel(String),
     Skills,
     InsertSkill(String),
     Clear,
@@ -394,8 +356,6 @@ fn parse_input(raw: &str) -> ParsedInput {
             Ok(effort) => ChatCommand::SetEffort(effort),
             Err(_) => ChatCommand::Unknown(input.to_string()),
         },
-        "/model" if argument.is_empty() => ChatCommand::ShowModel,
-        "/model" => ChatCommand::SetModel(argument.to_string()),
         "/skills" => ChatCommand::Skills,
         "/skill" if !argument.is_empty() => ChatCommand::InsertSkill(argument.to_string()),
         "/clear" => ChatCommand::Clear,
@@ -412,24 +372,17 @@ struct Suggestion {
     description: String,
 }
 
-#[derive(Debug, Clone)]
-struct ModelChoice {
-    id: String,
-    label: String,
-    efforts: Vec<ModelReasoningEffort>,
-}
-
 async fn load_metadata(
     codex: &codex_app_server_sdk::Codex,
     working_directory: &str,
-) -> (Vec<ModelChoice>, Vec<String>, Vec<String>) {
-    let skills = codex.skills_list(requests::SkillsListParams {
-        cwd: Some(vec![working_directory.to_string()]),
-        force_reload: Some(false),
-        ..Default::default()
-    });
-    let models = codex.model_list(requests::ModelListParams::default());
-    let (skills, models) = tokio::join!(skills, models);
+) -> (Vec<String>, Vec<String>) {
+    let skills = codex
+        .skills_list(requests::SkillsListParams {
+            cwd: Some(vec![working_directory.to_string()]),
+            force_reload: Some(false),
+            ..Default::default()
+        })
+        .await;
 
     let mut warnings = Vec::new();
     let skills = match skills {
@@ -443,14 +396,7 @@ async fn load_metadata(
             Vec::new()
         }
     };
-    let models = match models {
-        Ok(result) => model_choices(result),
-        Err(error) => {
-            warnings.push(format!("models unavailable: {error}"));
-            Vec::new()
-        }
-    };
-    (models, skills, warnings)
+    (skills, warnings)
 }
 
 fn enabled_skill_names(result: &responses::SkillsListResult) -> (Vec<String>, Vec<String>) {
@@ -496,38 +442,6 @@ fn skill_error_message(error: &serde_json::Value) -> Option<String> {
         .map(|message| format!("skills warning: {message}"))
 }
 
-fn model_choices(result: responses::ModelListResult) -> Vec<ModelChoice> {
-    result
-        .data
-        .into_iter()
-        .map(|model| ModelChoice {
-            label: model
-                .display_name
-                .clone()
-                .unwrap_or_else(|| model.model.clone()),
-            efforts: supported_efforts(&model),
-            id: model.model,
-        })
-        .collect()
-}
-
-fn supported_efforts(model: &responses::ModelInfo) -> Vec<ModelReasoningEffort> {
-    model
-        .extra
-        .get("supportedReasoningEfforts")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            entry
-                .get("reasoningEffort")?
-                .as_str()?
-                .parse::<ModelReasoningEffort>()
-                .ok()
-        })
-        .collect()
-}
-
 struct ChatApp {
     transcript: Vec<TranscriptBlock>,
     input: InputBuffer,
@@ -536,7 +450,6 @@ struct ChatApp {
     history_draft: String,
     suggestions_dismissed: bool,
     selected_suggestion: usize,
-    models: Vec<ModelChoice>,
     skills: Vec<String>,
     model: String,
     effort: ModelReasoningEffort,
@@ -571,7 +484,6 @@ impl ChatApp {
             history_draft: String::new(),
             suggestions_dismissed: false,
             selected_suggestion: 0,
-            models: Vec::new(),
             skills: Vec::new(),
             model,
             effort,
@@ -767,7 +679,7 @@ impl ChatApp {
         if self.suggestions_dismissed || self.busy {
             return Vec::new();
         }
-        suggestions_for(&self.input.text, &self.models, &self.skills, &self.model)
+        suggestions_for(&self.input.text, &self.skills)
     }
 
     fn handle_idle_key(&mut self, key: KeyEvent) -> IdleAction {
@@ -1086,14 +998,6 @@ impl ChatApp {
             self.follow_tail = true;
         }
     }
-
-    fn effort_names(&self) -> Vec<&str> {
-        self.models
-            .iter()
-            .find(|model| model.id == self.model && !model.efforts.is_empty())
-            .map(|model| model.efforts.iter().map(|effort| effort.as_str()).collect())
-            .unwrap_or_else(|| EFFORTS.to_vec())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1209,12 +1113,7 @@ impl InputBuffer {
     }
 }
 
-fn suggestions_for(
-    input: &str,
-    models: &[ModelChoice],
-    skills: &[String],
-    current_model: &str,
-) -> Vec<Suggestion> {
+fn suggestions_for(input: &str, skills: &[String]) -> Vec<Suggestion> {
     if let Some(prefix) = input.strip_prefix('$')
         && !prefix.contains(char::is_whitespace)
     {
@@ -1247,7 +1146,7 @@ fn suggestions_for(
             .iter()
             .filter(|(name, _)| name.starts_with(&command_lower))
             .map(|(name, description)| Suggestion {
-                replacement: if matches!(*name, "/effort" | "/model" | "/skill") {
+                replacement: if matches!(*name, "/effort" | "/skill") {
                     format!("{name} ")
                 } else {
                     (*name).to_string()
@@ -1259,40 +1158,13 @@ fn suggestions_for(
     };
 
     match command_lower.as_str() {
-        "/effort" => {
-            let supported = models
-                .iter()
-                .find(|model| model.id == current_model && !model.efforts.is_empty())
-                .map(|model| {
-                    model
-                        .efforts
-                        .iter()
-                        .map(|effort| effort.as_str())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_else(|| EFFORTS.to_vec());
-            supported
-                .into_iter()
-                .filter(|effort| effort.starts_with(&argument.to_ascii_lowercase()))
-                .map(|effort| Suggestion {
-                    replacement: format!("/effort {effort}"),
-                    display: effort.to_string(),
-                    description: "reasoning effort".to_string(),
-                })
-                .collect()
-        }
-        "/model" => models
-            .iter()
-            .filter(|model| {
-                model
-                    .id
-                    .to_ascii_lowercase()
-                    .starts_with(&argument.to_ascii_lowercase())
-            })
-            .map(|model| Suggestion {
-                replacement: format!("/model {}", model.id),
-                display: model.id.clone(),
-                description: model.label.clone(),
+        "/effort" => EFFORTS
+            .into_iter()
+            .filter(|effort| effort.starts_with(&argument.to_ascii_lowercase()))
+            .map(|effort| Suggestion {
+                replacement: format!("/effort {effort}"),
+                display: effort.to_string(),
+                description: "reasoning effort".to_string(),
             })
             .collect(),
         "/skill" => skills
@@ -1357,28 +1229,13 @@ fn moon_block<'a>() -> Block<'a> {
 }
 
 fn splash(height: u16) -> Paragraph<'static> {
-    let content_height = MOON.len() + 1 + LUNA_LOGO.len() + 2;
-    let top_padding = (height as usize).saturating_sub(content_height) / 2;
+    let top_padding = (height as usize).saturating_sub(1) / 2;
     let mut lines = vec![Line::default(); top_padding];
-    lines.extend(MOON.iter().map(|line| {
-        Line::from(Span::styled(
-            (*line).to_string(),
-            Style::default().fg(Color::DarkGray),
-        ))
-    }));
-    lines.push(Line::default());
-    lines.extend(LUNA_LOGO.iter().map(|line| {
-        Line::from(Span::styled(
-            (*line).to_string(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ))
-    }));
-    lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        "A quiet place to think in public.",
-        Style::default().fg(Color::DarkGray),
+        "Luna",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
     )));
     Paragraph::new(lines).alignment(Alignment::Center)
 }
@@ -1396,7 +1253,7 @@ fn wrapped_height(text: &Text<'_>, width: usize) -> usize {
 }
 
 fn help_text() -> &'static str {
-    "/compact          compact conversation context\n/effort [level]    show or set effort\n/model [name]      show or set model\n/skills            list enabled skills\n/skill <name>      insert $name into the composer\n/clear             clear the visible transcript\n/quit              leave chat\n\nTab accepts the ghost suggestion. Up/Down selects suggestions or history. PgUp/PgDn scrolls. Ctrl-C clears input or interrupts a running turn. Ctrl-D exits from an empty composer. Prefix a prompt with // to send a literal leading /."
+    "/compact          compact conversation context\n/effort [level]    show or set effort\n/skills            list enabled skills\n/skill <name>      insert $name into the composer\n/clear             clear the visible transcript\n/quit              leave chat\n\nTab accepts the ghost suggestion. Up/Down selects suggestions or history. PgUp/PgDn scrolls. Ctrl-C clears input or interrupts a running turn. Ctrl-D exits from an empty composer. Prefix a prompt with // to send a literal leading /."
 }
 
 fn accepts_key(key: KeyEvent) -> bool {
@@ -1439,28 +1296,20 @@ mod tests {
     }
 
     #[test]
-    fn completion_registry_suggests_commands_effort_models_and_skills() {
-        let models = vec![ModelChoice {
-            id: "gpt-luna".to_string(),
-            label: "Luna".to_string(),
-            efforts: vec![ModelReasoningEffort::Low, ModelReasoningEffort::High],
-        }];
+    fn completion_registry_suggests_commands_effort_and_skills() {
         let skills = vec!["reviewer".to_string()];
 
+        assert_eq!(suggestions_for("/co", &skills)[0].display, "/compact");
         assert_eq!(
-            suggestions_for("/co", &models, &skills, "gpt-luna")[0].display,
-            "/compact"
-        );
-        assert_eq!(
-            suggestions_for("/effort h", &models, &skills, "gpt-luna")[0].replacement,
+            suggestions_for("/effort h", &skills)[0].replacement,
             "/effort high"
         );
+        assert!(matches!(
+            parse_input("/model"),
+            ParsedInput::Command(ChatCommand::Unknown(_))
+        ));
         assert_eq!(
-            suggestions_for("/model g", &models, &skills, "gpt-luna")[0].replacement,
-            "/model gpt-luna"
-        );
-        assert_eq!(
-            suggestions_for("$rev", &models, &skills, "gpt-luna")[0].replacement,
+            suggestions_for("$rev", &skills)[0].replacement,
             "$reviewer "
         );
     }
@@ -1514,8 +1363,8 @@ mod tests {
         terminal.draw(|frame| app.render(frame)).expect("splash");
         let splash = terminal.backend().buffer().clone();
         let text = buffer_text(&splash);
-        assert!(text.contains("LUNA"));
-        assert!(text.contains("_..._"));
+        assert!(text.contains("Luna"));
+        assert!(!text.contains("_..._"));
 
         app.input.set("/co".to_string());
         terminal.draw(|frame| app.render(frame)).expect("popup");

@@ -13,6 +13,7 @@ pub(super) async fn run(cli: CliArgs) -> Result<ExitCode, LunaError> {
         transport: cli.transport_mode,
         websocket_url: resolved.url,
         manage_daemon,
+        ws_auth_token: cli.ws_auth_token,
     })
     .await?;
     Ok(if passed {

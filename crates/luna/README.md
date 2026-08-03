@@ -63,6 +63,11 @@ The WebSocket URL precedence is:
 3. legacy `CODEX_WEB_SERVER_URL`
 4. `ws://127.0.0.1:4222`
 
+When the app-server requires websocket auth, pass a bearer credential with
+`--ws-auth-token <TOKEN>` or `--ws-auth-token-file <PATH>`. Luna sends
+`Authorization: Bearer <token>` on the websocket upgrade. Auth tokens are only
+allowed for `wss://` or loopback `ws://` URLs, and they conflict with `--stdio`.
+
 Explicit URLs are connect-only: Luna will not start or own a server supplied by
 flag or environment. `luna start [--ws-url URL]` explicitly reuses or starts a
 loopback server. `--no-daemon` also forces connect-only behavior, and `--stdio`
@@ -89,8 +94,7 @@ luna sessions --all
 ## Chat
 
 `luna chat` opens a multi-turn Ratatui interface with a monochrome lunar theme,
-streaming activity, a persistent moon splash, history, scrolling, and inline
-completion:
+streaming activity, a Luna splash, history, scrolling, and inline completion:
 
 ```sh
 luna chat
@@ -106,11 +110,11 @@ shows the typed event JSON inside the transcript. Chat requires interactive stdi
 and stdout; use `luna exec` for pipes and scripts.
 
 Type `/` to autocomplete host commands. `/compact` requests context compaction;
-`/effort [level]` and `/model [name]` inspect or change later turns; `/skills`
-lists enabled Codex skills; `/skill <name>` or a leading `$` completes a skill
-mention. `/help`, `/clear`, and `/quit` are also available. Tab accepts the ghost
-suggestion, Up/Down selects suggestions or prompt history, PgUp/PgDn scrolls, and
-Ctrl-C interrupts a running turn.
+`/effort [level]` inspects or changes later turns; `/skills` lists enabled Codex
+skills; `/skill <name>` or a leading `$` completes a skill mention. `/help`,
+`/clear`, and `/quit` are also available. Chat stays on the Luna model (no
+`/model` picker). Tab accepts the ghost suggestion, Up/Down selects suggestions
+or prompt history, PgUp/PgDn scrolls, and Ctrl-C interrupts a running turn.
 
 Run `luna --help` for the complete typed thread/turn option surface.
 Without `--fast`, Luna explicitly selects the `default` service tier. With

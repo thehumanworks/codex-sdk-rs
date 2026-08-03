@@ -82,10 +82,29 @@ impl Default for StdioConfig {
 /// this config: pass them to [`CodexClient::start_and_connect_ws`] (or use
 /// [`WsStartConfig`] with the explicit start APIs), since a plain
 /// [`CodexClient::connect_ws`] never spawns anything.
-#[derive(Debug, Clone)]
+///
+/// When `auth_token` is set, the websocket HTTP upgrade includes
+/// `Authorization: Bearer <token>` (capability token or pre-signed JWT).
+/// Auth tokens are only accepted for `wss://` or loopback `ws://` URLs.
+#[derive(Clone)]
 pub struct WsConfig {
     pub url: String,
     pub options: ClientOptions,
+    /// Optional bearer credential for app-server websocket auth.
+    pub auth_token: Option<String>,
+}
+
+impl std::fmt::Debug for WsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsConfig")
+            .field("url", &self.url)
+            .field("options", &self.options)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 impl WsConfig {
@@ -93,11 +112,17 @@ impl WsConfig {
         Self {
             url: url.into(),
             options,
+            auth_token: None,
         }
     }
 
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = url.into();
+        self
+    }
+
+    pub fn with_auth_token(mut self, auth_token: impl Into<String>) -> Self {
+        self.auth_token = Some(auth_token.into());
         self
     }
 }
@@ -107,6 +132,7 @@ impl Default for WsConfig {
         Self {
             url: String::from("ws://127.0.0.1:4222"),
             options: ClientOptions::default(),
+            auth_token: None,
         }
     }
 }
@@ -253,7 +279,7 @@ impl CodexClient {
     }
 
     pub async fn connect_ws(config: WsConfig) -> Result<Self, ClientError> {
-        let handle = connect_ws_transport(&config.url).await?;
+        let handle = connect_ws_transport(&config.url, config.auth_token.as_deref()).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }
 
@@ -269,13 +295,16 @@ impl CodexClient {
     /// running when the URL is a managed loopback target. `env` is passed to
     /// any daemon this call spawns (it is not used when connecting to an
     /// already-running server).
+    ///
+    /// When `config.auth_token` is set, readiness probes and the final connect
+    /// both send `Authorization: Bearer <token>`.
     pub async fn start_and_connect_ws(
         config: WsConfig,
         env: HashMap<String, String>,
     ) -> Result<Self, ClientError> {
-        ensure_local_ws_app_server(&config.url, &env).await?;
+        ensure_local_ws_app_server(&config.url, &env, config.auth_token.as_deref()).await?;
 
-        let handle = connect_ws_transport(&config.url).await?;
+        let handle = connect_ws_transport(&config.url, config.auth_token.as_deref()).await?;
         Ok(Self::from_transport(handle, config.options.default_timeout))
     }
 

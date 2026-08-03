@@ -40,6 +40,8 @@ pub(crate) struct CliArgs {
     pub(crate) agent: Option<String>,
     pub(crate) working_directory: Option<String>,
     pub(crate) websocket_url: Option<String>,
+    /// Resolved websocket bearer credential (never printed).
+    pub(crate) ws_auth_token: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) model_provider: Option<String>,
     pub(crate) reasoning_effort: Option<ModelReasoningEffort>,
@@ -116,6 +118,20 @@ struct TransportCliArgs {
     /// WebSocket app-server URL
     #[arg(long, value_name = "URL", conflicts_with = "stdio")]
     ws_url: Option<String>,
+    /// Bearer token for WebSocket app-server auth (`Authorization: Bearer`)
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        conflicts_with_all = ["stdio", "ws_auth_token_file"]
+    )]
+    ws_auth_token: Option<String>,
+    /// Read the WebSocket auth bearer token from a file
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["stdio", "ws_auth_token"]
+    )]
+    ws_auth_token_file: Option<String>,
     /// Connect without managing a local WebSocket daemon
     #[arg(long)]
     no_daemon: bool,
@@ -238,6 +254,12 @@ struct StartCliArgs {
     /// Loopback WebSocket URL to reuse or start
     #[arg(long, value_name = "URL")]
     ws_url: Option<String>,
+    /// Bearer token for WebSocket app-server auth (`Authorization: Bearer`)
+    #[arg(long, value_name = "TOKEN", conflicts_with = "ws_auth_token_file")]
+    ws_auth_token: Option<String>,
+    /// Read the WebSocket auth bearer token from a file
+    #[arg(long, value_name = "PATH", conflicts_with = "ws_auth_token")]
+    ws_auth_token_file: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -348,8 +370,7 @@ fn normalize_legacy_cli_args(mut args: Vec<String>) -> Result<Vec<String>, LunaE
 fn turn_cli_args(command_kind: CommandKind, args: TurnCliArgs) -> Result<CliArgs, LunaError> {
     let transport_mode = transport_mode(args.transport.stdio);
     let mut cli = empty_cli_args(command_kind, transport_mode);
-    cli.no_daemon = args.transport.no_daemon;
-    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    apply_transport_args(&mut cli, args.transport)?;
     cli.agent = args
         .agent
         .as_deref()
@@ -470,13 +491,16 @@ fn turn_cli_args(command_kind: CommandKind, args: TurnCliArgs) -> Result<CliArgs
 fn start_cli_args(args: StartCliArgs) -> Result<CliArgs, LunaError> {
     let mut cli = empty_cli_args(CommandKind::Start, TransportMode::WebSocket);
     cli.websocket_url = normalize_optional_string(args.ws_url, "--ws-url")?;
+    cli.ws_auth_token = crate::websocket::resolve_ws_auth_token(
+        args.ws_auth_token.as_deref(),
+        args.ws_auth_token_file.as_deref(),
+    )?;
     Ok(cli)
 }
 
 fn sessions_cli_args(args: SessionsCliArgs) -> Result<CliArgs, LunaError> {
     let mut cli = empty_cli_args(CommandKind::Sessions, transport_mode(args.transport.stdio));
-    cli.no_daemon = args.transport.no_daemon;
-    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    apply_transport_args(&mut cli, args.transport)?;
     cli.working_directory = args
         .cwd
         .as_deref()
@@ -488,12 +512,26 @@ fn sessions_cli_args(args: SessionsCliArgs) -> Result<CliArgs, LunaError> {
 
 fn doctor_cli_args(args: DoctorCliArgs) -> Result<CliArgs, LunaError> {
     let mut cli = empty_cli_args(CommandKind::Doctor, transport_mode(args.transport.stdio));
-    cli.no_daemon = args.transport.no_daemon;
-    cli.websocket_url = normalize_optional_string(args.transport.ws_url, "--ws-url")?;
+    apply_transport_args(&mut cli, args.transport)?;
     cli.json_output = args.json;
     cli.doctor_live = args.live;
     let _ = (args.summary, args.no_color, args.ascii);
     Ok(cli)
+}
+
+fn apply_transport_args(cli: &mut CliArgs, transport: TransportCliArgs) -> Result<(), LunaError> {
+    cli.no_daemon = transport.no_daemon;
+    cli.websocket_url = normalize_optional_string(transport.ws_url, "--ws-url")?;
+    cli.ws_auth_token = crate::websocket::resolve_ws_auth_token(
+        transport.ws_auth_token.as_deref(),
+        transport.ws_auth_token_file.as_deref(),
+    )?;
+    if cli.transport_mode == TransportMode::Stdio && cli.ws_auth_token.is_some() {
+        return Err(LunaError::Usage(
+            "--ws-auth-token/--ws-auth-token-file cannot be combined with --stdio".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn transport_mode(stdio: bool) -> TransportMode {
@@ -529,6 +567,7 @@ fn empty_cli_args(command_kind: CommandKind, transport_mode: TransportMode) -> C
         agent: None,
         working_directory: None,
         websocket_url: None,
+        ws_auth_token: None,
         model: None,
         model_provider: None,
         reasoning_effort: None,
@@ -1382,6 +1421,39 @@ mod tests {
             .into_iter(),
         )
         .expect_err("ws-url should conflict with stdio");
+        assert!(matches!(error, LunaError::Usage(_)));
+    }
+
+    #[test]
+    fn parse_cli_args_accepts_ws_auth_token() {
+        let ParsedCommand::Run(cli) = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--ws-auth-token".to_string(),
+                "secret".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect("parse auth token") else {
+            panic!("expected run command");
+        };
+        assert_eq!(cli.ws_auth_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn parse_cli_args_rejects_ws_auth_token_with_stdio() {
+        let error = parse_cli_args(
+            vec![
+                "exec".to_string(),
+                "--stdio".to_string(),
+                "--ws-auth-token".to_string(),
+                "secret".to_string(),
+                "hello".to_string(),
+            ]
+            .into_iter(),
+        )
+        .expect_err("auth token should conflict with stdio");
         assert!(matches!(error, LunaError::Usage(_)));
     }
 

@@ -1,3 +1,8 @@
+use std::fs;
+use std::path::Path;
+
+use codex_app_server_sdk::websocket_url_allows_auth_token;
+
 use crate::error::LunaError;
 
 pub(crate) const DEFAULT_WS_URL: &str = "ws://127.0.0.1:4222";
@@ -79,6 +84,54 @@ fn normalize_websocket_url(raw: &str, source: &str) -> Result<String, LunaError>
     Ok(value.to_string())
 }
 
+/// Resolve a websocket bearer credential from `--ws-auth-token` or
+/// `--ws-auth-token-file`. The flags are mutually exclusive at the Clap layer.
+pub(crate) fn resolve_ws_auth_token(
+    token: Option<&str>,
+    token_file: Option<&str>,
+) -> Result<Option<String>, LunaError> {
+    match (token, token_file) {
+        (Some(_), Some(_)) => Err(LunaError::Usage(
+            "--ws-auth-token and --ws-auth-token-file cannot be combined".to_string(),
+        )),
+        (Some(token), None) => {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                return Err(LunaError::Usage(
+                    "value for --ws-auth-token cannot be empty".to_string(),
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        (None, Some(path)) => {
+            let contents = fs::read_to_string(Path::new(path)).map_err(|err| {
+                LunaError::Usage(format!(
+                    "failed to read --ws-auth-token-file `{path}`: {err}"
+                ))
+            })?;
+            let trimmed = contents.trim();
+            if trimmed.is_empty() {
+                return Err(LunaError::Usage(
+                    "value for --ws-auth-token-file cannot be empty".to_string(),
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// Bearer auth is only allowed for `wss://` or loopback `ws://` endpoints.
+pub(crate) fn ensure_ws_auth_allowed(url: &str) -> Result<(), LunaError> {
+    if websocket_url_allows_auth_token(url) {
+        Ok(())
+    } else {
+        Err(LunaError::Usage(
+            "websocket auth tokens require `wss://` or a loopback `ws://` URL".to_string(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +184,31 @@ mod tests {
             .expect_err("empty explicit source must not fall through");
         assert!(matches!(error, LunaError::Usage(_)));
         assert!(error.to_string().contains("--ws-url"));
+    }
+
+    #[test]
+    fn ws_auth_is_allowed_for_wss_and_loopback_ws_only() {
+        assert!(websocket_url_allows_auth_token("wss://example.com/app"));
+        assert!(websocket_url_allows_auth_token("ws://127.0.0.1:4222"));
+        assert!(websocket_url_allows_auth_token("ws://localhost:4222"));
+        assert!(websocket_url_allows_auth_token("ws://[::1]:4222"));
+        assert!(!websocket_url_allows_auth_token("ws://192.168.1.10:4222"));
+        assert!(
+            ensure_ws_auth_allowed("ws://example.com:4222")
+                .expect_err("remote ws auth")
+                .to_string()
+                .contains("loopback")
+        );
+    }
+
+    #[test]
+    fn resolve_ws_auth_token_reads_file_and_trims() {
+        let path = std::env::temp_dir().join("luna-ws-auth-token-test");
+        fs::write(&path, "  secret-token\n").expect("write token file");
+        let token = resolve_ws_auth_token(None, Some(path.to_str().expect("utf8 path")))
+            .expect("resolve file token")
+            .expect("token present");
+        assert_eq!(token, "secret-token");
+        let _ = fs::remove_file(path);
     }
 }

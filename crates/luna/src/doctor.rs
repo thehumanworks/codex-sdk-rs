@@ -21,13 +21,30 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_COMMAND_OUTPUT_BYTES: usize = 1024 * 1024;
 const REPORT_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct DoctorOptions {
     pub(crate) json: bool,
     pub(crate) live: bool,
     pub(crate) transport: TransportMode,
     pub(crate) websocket_url: String,
     pub(crate) manage_daemon: bool,
+    pub(crate) ws_auth_token: Option<String>,
+}
+
+impl std::fmt::Debug for DoctorOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DoctorOptions")
+            .field("json", &self.json)
+            .field("live", &self.live)
+            .field("transport", &self.transport)
+            .field("websocket_url", &self.websocket_url)
+            .field("manage_daemon", &self.manage_daemon)
+            .field(
+                "ws_auth_token",
+                &self.ws_auth_token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -435,7 +452,12 @@ async fn check_upstream_doctor(path: &Path) -> DoctorCheck {
 async fn check_live_readiness(options: &DoctorOptions) -> Vec<DoctorCheck> {
     let connection = match options.transport {
         TransportMode::WebSocket => {
-            connect_ws_codex(&options.websocket_url, options.manage_daemon).await
+            connect_ws_codex(
+                &options.websocket_url,
+                options.manage_daemon,
+                options.ws_auth_token.as_deref(),
+            )
+            .await
         }
         TransportMode::Stdio => spawn_stdio_codex().await,
     };

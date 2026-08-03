@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use crate::environment::resolve_codex_binary;
 use crate::error::LunaError;
+use crate::websocket::ensure_ws_auth_allowed;
 
 /// Environment variables forwarded to a daemon the SDK may spawn, so a
 /// freshly started `codex app-server` inherits the caller's credentials.
@@ -22,10 +23,18 @@ pub(crate) fn daemon_env() -> std::collections::HashMap<String, String> {
         .collect()
 }
 
-pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<Codex, LunaError> {
+pub(crate) async fn connect_ws_codex(
+    url: &str,
+    manage_daemon: bool,
+    auth_token: Option<&str>,
+) -> Result<Codex, LunaError> {
+    if auth_token.is_some() {
+        ensure_ws_auth_allowed(url)?;
+    }
     let config = WsConfig {
         url: url.to_string(),
         options: ClientOptions::default(),
+        auth_token: auth_token.map(str::to_string),
     };
     let client = if manage_daemon {
         CodexClient::start_and_connect_ws(config, daemon_env()).await?
@@ -35,10 +44,14 @@ pub(crate) async fn connect_ws_codex(url: &str, manage_daemon: bool) -> Result<C
     Ok(client.as_api())
 }
 
-pub(crate) async fn start_ws_server(url: &str) -> Result<(), LunaError> {
+pub(crate) async fn start_ws_server(url: &str, auth_token: Option<&str>) -> Result<(), LunaError> {
+    if auth_token.is_some() {
+        ensure_ws_auth_allowed(url)?;
+    }
     let config = WsConfig {
         url: url.to_string(),
         options: ClientOptions::default(),
+        auth_token: auth_token.map(str::to_string),
     };
     let _client = CodexClient::start_and_connect_ws(config, daemon_env()).await?;
     Ok(())

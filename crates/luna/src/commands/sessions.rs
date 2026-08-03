@@ -19,7 +19,12 @@ pub(super) async fn run(cli: CliArgs) -> Result<ExitCode, LunaError> {
     };
     let codex = match cli.transport_mode {
         TransportMode::WebSocket => {
-            connect_ws_codex(&resolved.url, resolved.manage_daemon() && !cli.no_daemon).await?
+            connect_ws_codex(
+                &resolved.url,
+                resolved.manage_daemon() && !cli.no_daemon,
+                cli.ws_auth_token.as_deref(),
+            )
+            .await?
         }
         TransportMode::Stdio => spawn_stdio_codex().await?,
     };

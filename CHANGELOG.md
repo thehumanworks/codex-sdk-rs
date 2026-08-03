@@ -40,6 +40,10 @@
   explicitly** (on `CodexClient` and `Codex`). Previously `WsConfig.env`
   was silently ignored by `connect_ws` — the field only exists where a
   process can actually be spawned. `WsStartConfig` keeps its `env`.
+- **`WsConfig` gains `auth_token: Option<String>`** (breaking for struct
+  literals). When set, connect and managed-loopback readiness probes send
+  `Authorization: Bearer <token>`. Use `with_auth_token(...)` or set the
+  field explicitly (`None` for unauthenticated servers).
 - **`WsServerHandle`/`WsStartMode` moved to `transport::ws_daemon`**
   (re-exports from `client` and the crate root are preserved, so most
   imports keep working).

@@ -52,6 +52,7 @@ pub(super) async fn prepare(cli: CliArgs) -> Result<PreparedTurn, LunaError> {
         resume_target,
         transport_mode,
         no_daemon,
+        ws_auth_token,
         ..
     } = cli;
 
@@ -60,7 +61,12 @@ pub(super) async fn prepare(cli: CliArgs) -> Result<PreparedTurn, LunaError> {
     let connect_task = tokio::spawn(async move {
         match transport_mode {
             TransportMode::WebSocket => {
-                connect_ws_codex(&websocket_url_for_connect, manage_daemon_for_connect).await
+                connect_ws_codex(
+                    &websocket_url_for_connect,
+                    manage_daemon_for_connect,
+                    ws_auth_token.as_deref(),
+                )
+                .await
             }
             TransportMode::Stdio => spawn_stdio_codex().await,
         }
